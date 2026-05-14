@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html>
+  <head>
+  <title>ZG Connect</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#075e54" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="ZG Connect" />
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        font-family: Arial, sans-serif;
+        background: #e5ddd5;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      /* Top bar */
+      #topbar {
+        background: #075e54;
+        color: white;
+        padding: 15px 20px;
+        font-size: 18px;
+        font-weight: bold;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      #topbar span {
+        font-size: 28px;
+      }
+
+      /* Name screen */
+      #name-screen {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        flex: 1;
+        padding: 30px;
+        gap: 15px;
+      }
+
+      #name-screen h2 {
+        font-size: 22px;
+        color: #333;
+      }
+
+      #name-screen p {
+        color: #666;
+        font-size: 14px;
+        text-align: center;
+      }
+
+      #name-input {
+        width: 100%;
+        max-width: 320px;
+        padding: 14px;
+        font-size: 16px;
+        border: 2px solid #ddd;
+        border-radius: 25px;
+        outline: none;
+        text-align: center;
+      }
+
+      #name-input:focus {
+        border-color: #075e54;
+      }
+
+      #join-btn {
+        width: 100%;
+        max-width: 320px;
+        padding: 14px;
+        background: #075e54;
+        color: white;
+        border: none;
+        border-radius: 25px;
+        font-size: 16px;
+        font-weight: bold;
+        cursor: pointer;
+      }
+
+      #join-btn:hover {
+        background: #128c7e;
+      }
+
+      /* Chat screen */
+      #chat-screen {
+        display: none;
+        flex-direction: column;
+        flex: 1;
+        overflow: hidden;
+      }
+
+      /* Messages area */
+      #messages {
+        flex: 1;
+        overflow-y: auto;
+        padding: 15px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      /* Each message bubble */
+      .message {
+        max-width: 75%;
+        padding: 10px 14px;
+        border-radius: 10px;
+        font-size: 15px;
+        line-height: 1.4;
+        word-wrap: break-word;
+      }
+
+      /* Other people's messages — left side */
+      .message.received {
+        background: white;
+        align-self: flex-start;
+        border-top-left-radius: 0;
+      }
+
+      /* Your messages — right side */
+      .message.sent {
+        background: #dcf8c6;
+        align-self: flex-end;
+        border-top-right-radius: 0;
+      }
+
+      .message .sender-name {
+        font-size: 12px;
+        font-weight: bold;
+        color: #075e54;
+        margin-bottom: 3px;
+      }
+
+      .message.sent .sender-name {
+        display: none; /* hide your own name on your messages */
+      }
+
+      .message .msg-time {
+        font-size: 11px;
+        color: #999;
+        text-align: right;
+        margin-top: 4px;
+      }
+
+      /* Bottom input bar */
+      #bottom-bar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 15px;
+        background: #f0f0f0;
+        border-top: 1px solid #ddd;
+      }
+
+      #msg-input {
+        flex: 1;
+        padding: 12px 15px;
+        font-size: 15px;
+        border: none;
+        border-radius: 25px;
+        background: white;
+        outline: none;
+      }
+
+      #send-btn {
+        width: 45px;
+        height: 45px;
+        background: #075e54;
+        color: white;
+        border: none;
+        border-radius: 50%;
+        font-size: 20px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      #send-btn:hover {
+        background: #128c7e;
+      }
+    </style>
+  </head>
+
+  <body>
+
+    <!-- Top bar -->
+    <div id="topbar">
+      <span>💬</span> Real-Time Chat
+    </div>
+
+    <!-- Name Entry Screen -->
+    <div id="name-screen">
+      <h2>👋 Welcome!</h2>
+      <p>Enter your name to start chatting</p>
+      <input
+        id="name-input"
+        type="text"
+        placeholder="Your name..."
+        maxlength="20"
+      />
+      <button id="join-btn" onclick="joinChat()">Join Chat</button>
+    </div>
+
+    <!-- Chat Screen -->
+    <div id="chat-screen">
+      <div id="messages"></div>
+      <div id="bottom-bar">
+        <input
+          id="msg-input"
+          type="text"
+          placeholder="Type a message..."
+          autocomplete="off"
+        />
+        <button id="send-btn" onclick="sendMessage()">➤</button>
+      </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const socket = io();
+      let myName = '';
+
+      // --- JOIN CHAT ---
+      function joinChat() {
+        const nameInput = document.getElementById('name-input');
+        const name = nameInput.value.trim();
+
+        if (name === '') {
+          alert('Please enter your name!');
+          return;
+        }
+
+        myName = name;
+
+        // Hide name screen, show chat
+        document.getElementById('name-screen').style.display = 'none';
+        document.getElementById('chat-screen').style.display = 'flex';
+
+        // Focus the message input
+        document.getElementById('msg-input').focus();
+      }
+
+      // Press Enter on name input to join
+      document.getElementById('name-input').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') joinChat();
+      });
+
+      // --- SEND MESSAGE ---
+      function sendMessage() {
+        const input = document.getElementById('msg-input');
+        const msg = input.value.trim();
+
+        if (msg === '') return;
+
+        // Send name + message to server
+        socket.emit('chat message', { name: myName, msg: msg });
+        input.value = '';
+        input.focus();
+      }
+
+      // Press Enter to send
+      document.getElementById('msg-input').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') sendMessage();
+      });
+
+      // --- RECEIVE MESSAGE ---
+      socket.on('chat message', (data) => {
+        const messages = document.getElementById('messages');
+
+        const div = document.createElement('div');
+
+        // Check if message is mine or someone else's
+        const isMine = data.name === myName;
+        div.classList.add('message', isMine ? 'sent' : 'received');
+
+        // Get current time
+        const now = new Date();
+        const time = now.getHours() + ':' + String(now.getMinutes()).padStart(2, '0');
+
+        div.innerHTML = `
+          <div class="sender-name">${data.name}</div>
+          <div class="msg-text">${data.msg}</div>
+          <div class="msg-time">${time}</div>
+        `;
+
+        messages.appendChild(div);
+        messages.scrollTop = messages.scrollHeight;
+      });
+    </script>
+	 <script>
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js');
+      }
+    </script>
+  </body>
+</html>
