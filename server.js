@@ -24,7 +24,7 @@ mongoose.connect(process.env.MONGO_URI)
   .catch(err => console.log('❌ MongoDB error:', err));
 
 // Serve frontend
-app.get('*', (req, res) => {
+app.get('/{*path}', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
