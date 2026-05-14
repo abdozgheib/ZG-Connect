@@ -34,14 +34,12 @@ const onlineUsers = {};
 io.on('connection', (socket) => {
   console.log('✅ User connected:', socket.id);
 
-  // User comes online
   socket.on('user-online', async (userId) => {
     onlineUsers[userId] = socket.id;
     await User.findByIdAndUpdate(userId, { online: true });
     io.emit('online-users', Object.keys(onlineUsers));
   });
 
-  // Private message
   socket.on('private-message', async (data) => {
     const { senderId, receiverId, content, senderName } = data;
     const message = new Message({ sender: senderId, receiver: receiverId, content });
@@ -55,7 +53,6 @@ io.on('connection', (socket) => {
         content,
         createdAt: message.createdAt
       });
-      // Send notification
       io.to(receiverSocket).emit('notification', {
         type: 'private',
         from: senderName,
@@ -65,6 +62,58 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Group message
   socket.on('group-message', async (data) => {
-    const { se
+    const { senderId, groupId, content, senderName, groupName } = data;
+    const message = new Message({ sender: senderId, group: groupId, content });
+    await message.save();
+    socket.to(groupId).emit('group-message', {
+      senderId,
+      senderName,
+      groupId,
+      content,
+      createdAt: message.createdAt
+    });
+    socket.to(groupId).emit('notification', {
+      type: 'group',
+      from: senderName,
+      groupName: groupName,
+      content: content,
+      groupId: groupId
+    });
+  });
+
+  socket.on('join-group', (groupId) => {
+    socket.join(groupId);
+  });
+
+  socket.on('typing', (data) => {
+    const receiverSocket = onlineUsers[data.receiverId];
+    if (receiverSocket) {
+      io.to(receiverSocket).emit('typing', {
+        senderId: data.senderId,
+        senderName: data.senderName
+      });
+    }
+  });
+
+  socket.on('stop-typing', (data) => {
+    const receiverSocket = onlineUsers[data.receiverId];
+    if (receiverSocket) {
+      io.to(receiverSocket).emit('stop-typing', {
+        senderId: data.senderId
+      });
+    }
+  });
+
+  socket.on('disconnect', async () => {
+    const userId = Object.keys(onlineUsers).find(k => onlineUsers[k] === socket.id);
+    if (userId) {
+      delete onlineUsers[userId];
+      await User.findByIdAndUpdate(userId, { online: false, lastSeen: Date.now() });
+      io.emit('online-users', Object.keys(onlineUsers));
+    }
+  });
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
