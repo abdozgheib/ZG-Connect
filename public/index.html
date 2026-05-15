@@ -381,7 +381,10 @@ if (chatUser && chatUser.avatar) {
 
     const res = await fetch(`/api/chat/messages/${userId}`, { headers: { Authorization: `Bearer ${token}` } });
     const messages = await res.json();
-   messages.forEach(m => addMessage(m.content, m.sender === currentUser.id ? 'sent' : 'received', '', m.createdAt, m._id, m.delivered, m.read));
+   messages.forEach(m => {
+  const isMine = m.sender === currentUser.id || m.sender === currentUser._id || String(m.sender) === String(currentUser.id);
+  addMessage(m.content, isMine ? 'sent' : 'received', '', m.createdAt, m._id, m.delivered, m.read);
+});
     scrollToBottom();
     document.getElementById('msg-input').focus();
   }
