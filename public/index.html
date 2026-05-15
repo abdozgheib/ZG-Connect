@@ -402,7 +402,7 @@ if (chatUser && chatUser.avatar) {
 
     const res = await fetch(`/api/chat/groups/${groupId}/messages`, { headers: { Authorization: `Bearer ${token}` } });
     const messages = await res.json();
-    messages.forEach(m => addMessage(m.content, m.sender._id === currentUser.id ? 'sent' : 'received', m.sender._id === currentUser.id ? '' : m.sender.name, m.createdAt));
+   messages.forEach(m => addMessage(m.content, (m.sender._id === currentUser.id || m.sender._id === currentUser._id) ? 'sent' : 'received', (m.sender._id === currentUser.id || m.sender._id === currentUser._id) ? '' : m.sender.name, m.createdAt, m._id, m.delivered, m.read));
     scrollToBottom();
     document.getElementById('msg-input').focus();
   }
