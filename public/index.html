@@ -284,7 +284,12 @@
     document.getElementById('chat-screen').style.display = 'flex';
     document.getElementById('chat-title').textContent = userName;
     document.getElementById('chat-status').textContent = online ? '🟢 Online' : '⚫ Offline';
-    document.getElementById('chat-avatar').textContent = userName[0].toUpperCase();
+    const chatUser = allUsers.find(u => u._id === userId);
+if (chatUser && chatUser.avatar) {
+  document.getElementById('chat-avatar').innerHTML = `<img src="${chatUser.avatar}" style="width:38px;height:38px;border-radius:50%;object-fit:cover;">`;
+} else {
+  document.getElementById('chat-avatar').textContent = userName[0].toUpperCase();
+}
     document.getElementById('messages').innerHTML = '';
 
     const res = await fetch(`/api/chat/messages/${userId}`, { headers: { Authorization: `Bearer ${token}` } });
