@@ -14,6 +14,8 @@ router.post('/avatar', auth, async (req, res) => {
       return res.status(400).json({ message: 'No image provided!' });
     }
 
+    console.log('📸 Uploading image for user:', req.user.id);
+
     // Upload to ImgBB
     const formData = new FormData();
     formData.append('key', process.env.IMGBB_API_KEY);
@@ -24,15 +26,22 @@ router.post('/avatar', auth, async (req, res) => {
     });
 
     const imageUrl = response.data.data.url;
+    console.log('✅ Image uploaded to ImgBB:', imageUrl);
 
     // Save to user profile
-    await User.findByIdAndUpdate(req.user.id, { avatar: imageUrl });
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user.id,
+      { avatar: imageUrl },
+      { new: true }
+    );
+
+    console.log('✅ Avatar saved to MongoDB:', updatedUser.avatar);
 
     res.json({ avatar: imageUrl, message: 'Profile photo updated!' });
 
   } catch (err) {
-    console.log('Upload error:', err);
-    res.status(500).json({ message: 'Failed to upload image!' });
+    console.log('❌ Upload error:', err.message);
+    res.status(500).json({ message: 'Failed to upload image: ' + err.message });
   }
 });
 
@@ -45,6 +54,7 @@ router.put('/update', auth, async (req, res) => {
       { name, about },
       { new: true }
     ).select('-password');
+    console.log('✅ Profile updated for user:', req.user.id);
     res.json(user);
   } catch (err) {
     res.status(500).json({ message: 'Something went wrong!' });
@@ -55,6 +65,7 @@ router.put('/update', auth, async (req, res) => {
 router.get('/me', auth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('-password');
+    console.log('👤 Profile loaded for user:', req.user.id, 'avatar:', user.avatar);
     res.json(user);
   } catch (err) {
     res.status(500).json({ message: 'Something went wrong!' });
