@@ -42,9 +42,14 @@ io.on('connection', (socket) => {
     io.emit('online-users', Object.keys(onlineUsers));
   });
 
-  socket.on('private-message', async (data) => {
+socket.on('private-message', async (data) => {
     const { senderId, receiverId, content, senderName } = data;
-    const message = new Message({ sender: senderId, receiver: receiverId, content });
+    const message = new Message({
+      sender: senderId,
+      receiver: receiverId,
+      content,
+      delivered: true
+    });
     await message.save();
     const receiverSocket = onlineUsers[receiverId];
     if (receiverSocket) {
@@ -53,6 +58,7 @@ io.on('connection', (socket) => {
         senderName,
         receiverId,
         content,
+        messageId: message._id,
         createdAt: message.createdAt
       });
       io.to(receiverSocket).emit('notification', {
@@ -61,6 +67,18 @@ io.on('connection', (socket) => {
         content: content,
         senderId: senderId
       });
+      // Tell sender message is delivered
+      io.to(socket.id).emit('message-delivered', { messageId: message._id });
+    }
+  });
+
+  // Message read
+  socket.on('message-read', async (data) => {
+    const { messageId, senderId } = data;
+    await Message.findByIdAndUpdate(messageId, { read: true, readAt: Date.now() });
+    const senderSocket = onlineUsers[senderId];
+    if (senderSocket) {
+      io.to(senderSocket).emit('message-read', { messageId });
     }
   });
 
