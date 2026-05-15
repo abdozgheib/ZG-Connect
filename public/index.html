@@ -232,7 +232,9 @@
     }
     list.innerHTML = allUsers.map(u => `
       <div class="chat-item" onclick="openPrivateChat('${u._id}','${u.name}',${u.online})">
-        <div class="avatar">${u.name[0].toUpperCase()}</div>
+        <div class="avatar">
+  ${u.avatar ? `<img src="${u.avatar}" style="width:48px;height:48px;border-radius:50%;object-fit:cover;">` : u.name[0].toUpperCase()}
+</div>
         <div class="chat-info">
           <div class="chat-name">${u.name}</div>
           <div class="chat-preview">${u.online ? '🟢 Online' : '⚫ Offline'}</div>
