@@ -107,11 +107,13 @@
 <div id="app">
 
   <!-- TOP BAR -->
-  <div id="topbar">
+ <div id="topbar">
   <h2>💬 ZG Connect</h2>
   <div style="display:flex;gap:10px;">
-    <button id="profile-btn" onclick="openProfileModal()">👤 Profile</button>
-    <button id="new-group-btn" onclick="openGroupModal()">+ New Group</button>
+    <button onclick="openSearchModal()" style="background:#25d366;border:none;color:white;padding:7px 14px;border-radius:20px;cursor:pointer;font-size:13px;">🔍 Add</button>
+    <button onclick="openRequestsModal()" style="background:#128c7e;border:none;color:white;padding:7px 14px;border-radius:20px;cursor:pointer;font-size:13px;">📩 Requests</button>
+    <button id="profile-btn" onclick="openProfileModal()" style="background:#075e54;border:none;color:white;padding:7px 14px;border-radius:20px;cursor:pointer;font-size:13px;">👤 Profile</button>
+    <button id="new-group-btn" onclick="openGroupModal()" style="background:#25d366;border:none;color:white;padding:7px 14px;border-radius:20px;cursor:pointer;font-size:13px;">+ Group</button>
   </div>
 </div>
 
@@ -149,6 +151,24 @@
 
 <!-- CREATE GROUP MODAL -->
  <!-- PROFILE MODAL -->
+  <!-- SEARCH MODAL -->
+<div id="search-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:100;align-items:center;justify-content:center;">
+  <div style="background:white;border-radius:15px;padding:25px;width:90%;max-width:380px;display:flex;flex-direction:column;gap:12px;max-height:80vh;">
+    <h3 style="color:#075e54;">🔍 Add Contact</h3>
+    <input id="search-input" style="padding:12px;border:1px solid #ddd;border-radius:25px;font-size:15px;outline:none;" placeholder="Search by name or phone..." oninput="searchUsers(this.value)"/>
+    <div id="search-results" style="overflow-y:auto;max-height:300px;display:flex;flex-direction:column;gap:8px;"></div>
+    <button onclick="closeSearchModal()" style="padding:12px;background:#eee;color:#333;border:none;border-radius:10px;font-size:15px;cursor:pointer;">Close</button>
+  </div>
+</div>
+
+<!-- REQUESTS MODAL -->
+<div id="requests-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:100;align-items:center;justify-content:center;">
+  <div style="background:white;border-radius:15px;padding:25px;width:90%;max-width:380px;display:flex;flex-direction:column;gap:12px;max-height:80vh;">
+    <h3 style="color:#075e54;">📩 Contact Requests</h3>
+    <div id="requests-list" style="overflow-y:auto;max-height:350px;display:flex;flex-direction:column;gap:8px;"></div>
+    <button onclick="closeRequestsModal()" style="padding:12px;background:#eee;color:#333;border:none;border-radius:10px;font-size:15px;cursor:pointer;">Close</button>
+  </div>
+</div>
 <div id="profile-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:100;align-items:center;justify-content:center;">
   <div style="background:white;border-radius:15px;padding:25px;width:90%;max-width:380px;display:flex;flex-direction:column;gap:12px;">
     <h3 style="color:#075e54;">👤 My Profile</h3>
@@ -421,7 +441,149 @@ if (chatUser && chatUser.avatar) {
 
   // ==================== GROUP MODAL ====================
 // ==================== PROFILE ====================
+// ==================== SEARCH & CONTACTS ====================
 
+async function openSearchModal() {
+  document.getElementById('search-modal').style.display = 'flex';
+  document.getElementById('search-input').value = '';
+  document.getElementById('search-results').innerHTML = '';
+}
+
+function closeSearchModal() {
+  document.getElementById('search-modal').style.display = 'none';
+}
+
+async function searchUsers(query) {
+  if (query.length < 2) {
+    document.getElementById('search-results').innerHTML = '';
+    return;
+  }
+  try {
+    const res = await fetch(`/api/contacts/search?query=${query}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    const users = await res.json();
+    const results = document.getElementById('search-results');
+    if (users.length === 0) {
+      results.innerHTML = '<p style="text-align:center;color:#999;">No users found!</p>';
+      return;
+    }
+    results.innerHTML = users.map(u => `
+      <div style="display:flex;align-items:center;gap:10px;padding:10px;background:#f5f5f5;border-radius:10px;">
+        <div style="width:40px;height:40px;border-radius:50%;background:#075e54;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;overflow:hidden;flex-shrink:0;">
+          ${u.avatar ? `<img src="${u.avatar}" style="width:40px;height:40px;object-fit:cover;">` : u.name[0].toUpperCase()}
+        </div>
+        <div style="flex:1;">
+          <div style="font-weight:bold;">${u.name}</div>
+          <div style="font-size:12px;color:#999;">${u.phone || u.email}</div>
+        </div>
+        <button onclick="sendContactRequest('${u._id}', this)" style="background:#075e54;color:white;border:none;padding:6px 12px;border-radius:15px;cursor:pointer;font-size:13px;">+ Add</button>
+      </div>
+    `).join('');
+  } catch (err) {
+    console.log('Search error:', err);
+  }
+}
+
+async function sendContactRequest(userId, btn) {
+  try {
+    const res = await fetch('/api/contacts/request', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ userId })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      btn.textContent = '✅ Sent';
+      btn.disabled = true;
+      btn.style.background = '#ccc';
+    } else {
+      alert(data.message);
+    }
+  } catch (err) {
+    alert('Something went wrong!');
+  }
+}
+
+async function openRequestsModal() {
+  document.getElementById('requests-modal').style.display = 'flex';
+  loadRequests();
+}
+
+function closeRequestsModal() {
+  document.getElementById('requests-modal').style.display = 'none';
+}
+
+async function loadRequests() {
+  try {
+    const res = await fetch('/api/contacts/pending', {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    const requests = await res.json();
+    const list = document.getElementById('requests-list');
+    if (requests.length === 0) {
+      list.innerHTML = '<p style="text-align:center;color:#999;">No pending requests!</p>';
+      return;
+    }
+    list.innerHTML = requests.map(u => `
+      <div style="display:flex;align-items:center;gap:10px;padding:10px;background:#f5f5f5;border-radius:10px;">
+        <div style="width:40px;height:40px;border-radius:50%;background:#075e54;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;overflow:hidden;flex-shrink:0;">
+          ${u.avatar ? `<img src="${u.avatar}" style="width:40px;height:40px;object-fit:cover;">` : u.name[0].toUpperCase()}
+        </div>
+        <div style="flex:1;">
+          <div style="font-weight:bold;">${u.name}</div>
+          <div style="font-size:12px;color:#999;">${u.phone || u.email}</div>
+        </div>
+        <button onclick="acceptRequest('${u._id}', this)" style="background:#25d366;color:white;border:none;padding:6px 12px;border-radius:15px;cursor:pointer;font-size:13px;">✅</button>
+        <button onclick="declineRequest('${u._id}', this)" style="background:#ff6b6b;color:white;border:none;padding:6px 12px;border-radius:15px;cursor:pointer;font-size:13px;">❌</button>
+      </div>
+    `).join('');
+  } catch (err) {
+    console.log('Error loading requests:', err);
+  }
+}
+
+async function acceptRequest(userId, btn) {
+  try {
+    const res = await fetch('/api/contacts/accept', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ userId })
+    });
+    if (res.ok) {
+      showNotification('✅ Contact accepted!');
+      closeRequestsModal();
+      await loadUsers();
+    }
+  } catch (err) {
+    alert('Something went wrong!');
+  }
+}
+
+async function declineRequest(userId, btn) {
+  try {
+    const res = await fetch('/api/contacts/decline', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ userId })
+    });
+    if (res.ok) {
+      showNotification('Contact declined!');
+      loadRequests();
+    }
+  } catch (err) {
+    alert('Something went wrong!');
+  }
+}
 async function openProfileModal() {
   document.getElementById('profile-modal').style.display = 'flex';
   try {
