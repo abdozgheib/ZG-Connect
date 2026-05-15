@@ -17,6 +17,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/chat', require('./routes/chat'));
+app.use('/api/contacts', require('./routes/contacts'));
+app.use('/api/profile', require('./routes/profile'));
 
 // Connect to MongoDB
 mongoose.connect(process.env.MONGO_URI)
