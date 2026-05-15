@@ -48,15 +48,17 @@ router.post('/avatar', auth, async (req, res) => {
 // Update profile info
 router.put('/update', auth, async (req, res) => {
   try {
-    const { name, about } = req.body;
+    const { name, about, phone } = req.body;
+    console.log('📝 Updating profile:', { name, about, phone });
     const user = await User.findByIdAndUpdate(
       req.user.id,
-      { name, about },
-      { new: true }
+      { $set: { name, about, phone } },
+      { new: true, strict: false }
     ).select('-password');
-    console.log('✅ Profile updated for user:', req.user.id);
+    console.log('✅ Profile updated:', user);
     res.json(user);
   } catch (err) {
+    console.log('❌ Update error:', err);
     res.status(500).json({ message: 'Something went wrong!' });
   }
 });
