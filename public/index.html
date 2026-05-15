@@ -118,15 +118,17 @@
 </div>
 
   <!-- TABS -->
-  <div id="tabs">
-    <div class="tab active" onclick="showTab('people')" id="tab-people">👤 People</div>
-    <div class="tab" onclick="showTab('groups')" id="tab-groups">👥 Groups</div>
-  </div>
+ <div id="tabs">
+  <div class="tab active" onclick="showTab('people')" id="tab-people">💬 Chats</div>
+  <div class="tab" onclick="showTab('groups')" id="tab-groups">👥 Groups</div>
+  <div class="tab" onclick="showTab('contacts')" id="tab-contacts">👤 Contacts</div>
+</div>
 
   <!-- CHAT LIST -->
   <div id="chat-list-screen">
     <div id="people-list"></div>
-    <div id="groups-list" style="display:none"></div>
+<div id="groups-list" style="display:none"></div>
+<div id="contacts-list" style="display:none"></div>
   </div>
 
 </div>
@@ -278,6 +280,33 @@
     allUsers = await res.json();
     renderPeople();
   }
+  async function renderContacts() {
+  const list = document.getElementById('contacts-list');
+  try {
+    const res = await fetch('/api/contacts', {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    const contacts = await res.json();
+    if (contacts.length === 0) {
+      list.innerHTML = '<div class="empty-state"><div>👤</div>No contacts yet. Add some!</div>';
+      return;
+    }
+    list.innerHTML = contacts.map(u => `
+      <div class="chat-item" onclick="openPrivateChat('${u._id}','${u.name}',${u.online})">
+        <div class="avatar">
+          ${u.avatar ? `<img src="${u.avatar}" style="width:48px;height:48px;border-radius:50%;object-fit:cover;">` : u.name[0].toUpperCase()}
+        </div>
+        <div class="chat-info">
+          <div class="chat-name">${u.name}</div>
+          <div class="chat-preview">${u.phone || u.email}</div>
+        </div>
+        <div class="${u.online ? 'online-dot' : 'offline-dot'}"></div>
+      </div>
+    `).join('');
+  } catch (err) {
+    console.log('Error loading contacts:', err);
+  }
+}
 
   function renderPeople() {
     const list = document.getElementById('people-list');
@@ -321,12 +350,15 @@
     groups.forEach(g => socket.emit('join-group', g._id));
   }
 
-  function showTab(tab) {
-    document.getElementById('people-list').style.display = tab === 'people' ? 'block' : 'none';
-    document.getElementById('groups-list').style.display = tab === 'groups' ? 'block' : 'none';
-    document.getElementById('tab-people').classList.toggle('active', tab === 'people');
-    document.getElementById('tab-groups').classList.toggle('active', tab === 'groups');
-  }
+ function showTab(tab) {
+  document.getElementById('people-list').style.display = tab === 'people' ? 'block' : 'none';
+  document.getElementById('groups-list').style.display = tab === 'groups' ? 'block' : 'none';
+  document.getElementById('contacts-list').style.display = tab === 'contacts' ? 'block' : 'none';
+  document.getElementById('tab-people').classList.toggle('active', tab === 'people');
+  document.getElementById('tab-groups').classList.toggle('active', tab === 'groups');
+  document.getElementById('tab-contacts').classList.toggle('active', tab === 'contacts');
+  if (tab === 'contacts') renderContacts();
+}
 
   // ==================== PRIVATE CHAT ====================
 
