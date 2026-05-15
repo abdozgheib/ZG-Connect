@@ -8,8 +8,8 @@ const Group = require('../models/Group');
 // Get all users
 router.get('/users', auth, async (req, res) => {
   try {
-    const users = await User.find({ _id: { $ne: req.user.id } }).select('-password').lean();
-    res.json(users);
+    const me = await User.findById(req.user.id).populate('contacts', '-password');
+    res.json(me.contacts);
   } catch (err) {
     res.status(500).json({ message: 'Something went wrong!' });
   }
