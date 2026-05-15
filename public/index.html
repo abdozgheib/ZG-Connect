@@ -449,7 +449,7 @@ if (chatUser && chatUser.avatar) {
   function addMessage(content, type, senderName, time, messageId, delivered, read) {
   const messages = document.getElementById('messages');
   const div = document.createElement('div');
-  div.classList.add('message', type);
+  div.classList.add('msg', type);
   div.setAttribute('data-id', messageId || '');
   const t = new Date(time);
   const timeStr = t.getHours() + ':' + String(t.getMinutes()).padStart(2, '0');
