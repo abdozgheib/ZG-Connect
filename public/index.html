@@ -456,17 +456,14 @@ if (chatUser && chatUser.avatar) {
   
   let ticks = '';
   if (type === 'sent') {
-    if (read) ticks = '<span style="color:#34b7f1;">✓✓</span>';
-    else if (delivered) ticks = '<span style="color:#999;">✓✓</span>';
-    else ticks = '<span style="color:#999;">✓</span>';
+    if (read) ticks = '<span style="color:#34b7f1;font-size:11px;">✓✓</span>';
+    else if (delivered) ticks = '<span style="color:#999;font-size:11px;">✓✓</span>';
+    else ticks = '<span style="color:#999;font-size:11px;">✓</span>';
   }
 
-  div.innerHTML = `
-    ${senderName ? `<div class="sender-name">${senderName}</div>` : ''}
-    <div>${content}</div>
-    <div class="msg-time">${timeStr} ${ticks}</div>
-  `;
+  div.innerHTML = `${senderName ? `<div class="sender-name">${senderName}</div>` : ''}<div class="msg-text">${content}</div><div class="msg-time">${timeStr} ${ticks}</div>`;
   messages.appendChild(div);
+  messages.scrollTop = messages.scrollHeight;
 }
 
   function scrollToBottom() {
