@@ -15,7 +15,7 @@
     /* AUTH SCREEN */
     #auth-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#075e54;padding:30px;gap:15px;}
     #auth-screen h1{color:white;font-size:28px;margin-bottom:10px;}
-    #auth-screen p{color:#rgba(255,255,255,0.8);font-size:14px;color:#ccc;}
+    #auth-screen p{color:rgba(255,255,255,0.8);font-size:14px;color:#ccc;}
     .auth-input{width:100%;max-width:340px;padding:14px;font-size:15px;border:none;border-radius:25px;outline:none;}
     .auth-btn{width:100%;max-width:340px;padding:14px;background:#25d366;color:white;border:none;border-radius:25px;font-size:16px;font-weight:bold;cursor:pointer;}
     .auth-btn:hover{background:#128c7e;}
@@ -108,9 +108,12 @@
 
   <!-- TOP BAR -->
   <div id="topbar">
-    <h2>💬 ZG Connect</h2>
+  <h2>💬 ZG Connect</h2>
+  <div style="display:flex;gap:10px;">
+    <button id="profile-btn" onclick="openProfileModal()">👤 Profile</button>
     <button id="new-group-btn" onclick="openGroupModal()">+ New Group</button>
   </div>
+</div>
 
   <!-- TABS -->
   <div id="tabs">
@@ -145,6 +148,38 @@
 </div>
 
 <!-- CREATE GROUP MODAL -->
+ <!-- PROFILE MODAL -->
+<div id="profile-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:100;align-items:center;justify-content:center;">
+  <div style="background:white;border-radius:15px;padding:25px;width:90%;max-width:380px;display:flex;flex-direction:column;gap:12px;">
+    <h3 style="color:#075e54;">👤 My Profile</h3>
+
+    <!-- Avatar -->
+    <div style="display:flex;flex-direction:column;align-items:center;gap:10px;">
+      <div id="profile-avatar-preview" style="width:80px;height:80px;border-radius:50%;background:#075e54;display:flex;align-items:center;justify-content:center;font-size:30px;color:white;overflow:hidden;">
+      </div>
+      <label for="avatar-input" style="background:#25d366;color:white;padding:8px 16px;border-radius:20px;cursor:pointer;font-size:13px;">
+        📷 Change Photo
+      </label>
+      <input type="file" id="avatar-input" accept="image/*" style="display:none;" onchange="uploadAvatar(this)"/>
+      <span id="upload-status" style="font-size:12px;color:#999;"></span>
+    </div>
+
+    <!-- Name -->
+    <label style="font-size:13px;color:#075e54;font-weight:bold;">Your Name</label>
+    <input id="profile-name-input" style="padding:10px;border:1px solid #ddd;border-radius:10px;font-size:15px;" placeholder="Your name"/>
+
+    <!-- About -->
+    <label style="font-size:13px;color:#075e54;font-weight:bold;">About</label>
+    <input id="profile-about-input" style="padding:10px;border:1px solid #ddd;border-radius:10px;font-size:15px;" placeholder="Hey there!"/>
+
+    <!-- Email -->
+    <label style="font-size:13px;color:#075e54;font-weight:bold;">Email</label>
+    <div id="profile-email" style="padding:10px;background:#f5f5f5;border-radius:10px;color:#999;font-size:15px;"></div>
+
+    <button onclick="saveProfile()" style="padding:12px;background:#075e54;color:white;border:none;border-radius:10px;font-size:15px;cursor:pointer;font-weight:bold;">Save Changes</button>
+    <button onclick="closeProfileModal()" style="padding:12px;background:#eee;color:#333;border:none;border-radius:10px;font-size:15px;cursor:pointer;">Cancel</button>
+  </div>
+</div>
 <div id="group-modal">
   <div class="modal-box">
     <h3>👥 Create New Group</h3>
@@ -385,7 +420,93 @@ if (chatUser && chatUser.avatar) {
   }
 
   // ==================== GROUP MODAL ====================
+// ==================== PROFILE ====================
 
+async function openProfileModal() {
+  document.getElementById('profile-modal').style.display = 'flex';
+  try {
+    const res = await fetch('/api/profile/me', {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    const user = await res.json();
+
+    // Show avatar
+    const avatarEl = document.getElementById('profile-avatar-preview');
+    if (user.avatar) {
+      avatarEl.innerHTML = `<img src="${user.avatar}" style="width:80px;height:80px;object-fit:cover;">`;
+    } else {
+      avatarEl.textContent = user.name[0].toUpperCase();
+    }
+
+    document.getElementById('profile-name-input').value = user.name;
+    document.getElementById('profile-about-input').value = user.about || '';
+    document.getElementById('profile-email').textContent = user.email;
+  } catch (err) {
+    console.log('Error loading profile:', err);
+  }
+}
+
+function closeProfileModal() {
+  document.getElementById('profile-modal').style.display = 'none';
+}
+
+async function uploadAvatar(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  document.getElementById('upload-status').textContent = 'Uploading...';
+
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    const base64 = e.target.result.split(',')[1];
+    try {
+      const res = await fetch('/api/profile/avatar', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ imageBase64: base64 })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        document.getElementById('profile-avatar-preview').innerHTML = 
+          `<img src="${data.avatar}" style="width:80px;height:80px;object-fit:cover;">`;
+        document.getElementById('upload-status').textContent = '✅ Photo updated!';
+      } else {
+        document.getElementById('upload-status').textContent = '❌ Upload failed!';
+      }
+    } catch (err) {
+      document.getElementById('upload-status').textContent = '❌ Upload failed!';
+    }
+  };
+  reader.readAsDataURL(file);
+}
+
+async function saveProfile() {
+  const name = document.getElementById('profile-name-input').value.trim();
+  const about = document.getElementById('profile-about-input').value.trim();
+
+  if (!name) { alert('Please enter your name!'); return; }
+
+  try {
+    const res = await fetch('/api/profile/update', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ name, about })
+    });
+    if (res.ok) {
+      closeProfileModal();
+      showNotification('✅ Profile updated!');
+      await loadUsers();
+    }
+  } catch (err) {
+    alert('Could not save profile!');
+  }
+}
   function openGroupModal() {
     const memberList = document.getElementById('member-list');
     memberList.innerHTML = allUsers.map(u => `
