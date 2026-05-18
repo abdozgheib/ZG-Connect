@@ -63,5 +63,27 @@ router.get('/groups/:groupId/messages', auth, async (req, res) => {
     res.status(500).json({ message: 'Something went wrong!' });
   }
 });
+// Delete message
+router.delete('/messages/:messageId', auth, async (req, res) => {
+  try {
+    const message = await Message.findById(req.params.messageId);
+    if (!message) return res.status(404).json({ message: 'Message not found!' });
+
+    // Only sender can delete
+    if (message.sender.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'You can only delete your own messages!' });
+    }
+
+    // Delete for everyone
+    await Message.findByIdAndUpdate(req.params.messageId, {
+      deleted: true,
+      content: 'This message was deleted'
+    });
+
+    res.json({ message: 'Message deleted!' });
+  } catch (err) {
+    res.status(500).json({ message: 'Something went wrong!' });
+  }
+});
 
 module.exports = router;
