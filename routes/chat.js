@@ -85,5 +85,19 @@ router.delete('/messages/:messageId', auth, async (req, res) => {
     res.status(500).json({ message: 'Something went wrong!' });
   }
 });
+// Delete chat (all messages between two users)
+router.delete('/chat/:userId', auth, async (req, res) => {
+  try {
+    await Message.deleteMany({
+      $or: [
+        { sender: req.user.id, receiver: req.params.userId },
+        { sender: req.params.userId, receiver: req.user.id }
+      ]
+    });
+    res.json({ message: 'Chat deleted!' });
+  } catch (err) {
+    res.status(500).json({ message: 'Something went wrong!' });
+  }
+});
 
 module.exports = router;
