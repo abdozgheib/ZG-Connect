@@ -74,4 +74,15 @@ router.get('/me', auth, async (req, res) => {
   }
 });
 
+// Get contact profile
+router.get('/contact/:userId', auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.params.userId).select('-password');
+    if (!user) return res.status(404).json({ message: 'User not found!' });
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ message: 'Something went wrong!' });
+  }
+});
+
 module.exports = router;
