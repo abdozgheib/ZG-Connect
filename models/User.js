@@ -10,6 +10,7 @@ const userSchema = new mongoose.Schema({
   contacts: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   pendingRequests: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   sentRequests: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  fcmToken: { type: String, default: '' },
   online: { type: Boolean, default: false },
   lastSeen: { type: Date, default: Date.now }
 }, { timestamps: true, strict: false });

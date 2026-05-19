@@ -6,7 +6,7 @@ const mongoose = require('mongoose');
 const path = require('path');
 const Message = require('./models/Message');
 const User = require('./models/User');
-
+const { sendNotification } = require('./notifications');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
@@ -51,6 +51,7 @@ socket.on('private-message', async (data) => {
       delivered: true
     });
     await message.save();
+
     const receiverSocket = onlineUsers[receiverId];
     if (receiverSocket) {
       io.to(receiverSocket).emit('private-message', {
@@ -67,8 +68,28 @@ socket.on('private-message', async (data) => {
         content: content,
         senderId: senderId
       });
-      // Tell sender message is delivered
       io.to(socket.id).emit('message-delivered', { messageId: message._id });
+    } else {
+      // User is offline - send FCM notification
+      try {
+        const receiver = await User.findById(receiverId);
+        if (receiver && receiver.fcmToken) {
+          const preview = content.startsWith('📷[image]') ? '📷 Photo' : content;
+          await sendNotification(
+            receiver.fcmToken,
+            `💬 ${senderName}`,
+            preview,
+            {
+              type: 'private_message',
+              senderId: senderId.toString(),
+              senderName,
+              receiverId: receiverId.toString()
+            }
+          );
+        }
+      } catch (err) {
+        console.log('FCM error:', err);
+      }
     }
   });
 

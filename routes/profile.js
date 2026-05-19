@@ -84,5 +84,15 @@ router.get('/contact/:userId', auth, async (req, res) => {
     res.status(500).json({ message: 'Something went wrong!' });
   }
 });
+// Save FCM token
+router.post('/fcm-token', auth, async (req, res) => {
+  try {
+    const { fcmToken } = req.body;
+    await User.findByIdAndUpdate(req.user.id, { fcmToken });
+    res.json({ message: 'FCM token saved!' });
+  } catch (err) {
+    res.status(500).json({ message: 'Something went wrong!' });
+  }
+});
 
 module.exports = router;
