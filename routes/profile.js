@@ -88,9 +88,12 @@ router.get('/contact/:userId', auth, async (req, res) => {
 router.post('/fcm-token', auth, async (req, res) => {
   try {
     const { fcmToken } = req.body;
+    console.log('📱 Saving FCM token for user:', req.user.id, 'token:', fcmToken?.substring(0, 20));
     await User.findByIdAndUpdate(req.user.id, { fcmToken });
+    console.log('✅ FCM token saved!');
     res.json({ message: 'FCM token saved!' });
   } catch (err) {
+    console.log('❌ FCM token error:', err);
     res.status(500).json({ message: 'Something went wrong!' });
   }
 });
