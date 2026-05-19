@@ -62,11 +62,13 @@ socket.on('private-message', async (data) => {
         messageId: message._id,
         createdAt: message.createdAt
       });
-      io.to(receiverSocket).emit('notification', {
+     io.to(receiverSocket).emit('notification', {
         type: 'private',
         from: senderName,
         content: content,
-        senderId: senderId
+        senderId: senderId,
+        messageId: message._id,
+        createdAt: message.createdAt
       });
       io.to(socket.id).emit('message-delivered', { messageId: message._id });
     } else {
