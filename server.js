@@ -12,7 +12,8 @@ const server = http.createServer(app);
 const io = new Server(server);
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+// Serve static files; `extensions: ['html']` lets /home serve home.html, etc.
+app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
@@ -25,7 +26,7 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('✅ Connected to MongoDB!'))
   .catch(err => console.log('❌ MongoDB error:', err));
 
-// Serve frontend
+// SPA fallback — any unknown route serves index.html so the client-side router takes over
 app.get('/{*path}', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
