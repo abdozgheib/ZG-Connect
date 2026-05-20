@@ -52,7 +52,7 @@ socket.on('private-message', async (data) => {
     });
     await message.save();
 
-    const receiverSocket = onlineUsers[receiverId];
+  const receiverSocket = onlineUsers[receiverId];
     if (receiverSocket) {
       io.to(receiverSocket).emit('private-message', {
         senderId,
@@ -62,7 +62,7 @@ socket.on('private-message', async (data) => {
         messageId: message._id,
         createdAt: message.createdAt
       });
-     io.to(receiverSocket).emit('notification', {
+      io.to(receiverSocket).emit('notification', {
         type: 'private',
         from: senderName,
         content: content,
@@ -71,27 +71,27 @@ socket.on('private-message', async (data) => {
         createdAt: message.createdAt
       });
       io.to(socket.id).emit('message-delivered', { messageId: message._id });
-    } else {
-      // User is offline - send FCM notification
-      try {
-        const receiver = await User.findById(receiverId);
-        if (receiver && receiver.fcmToken) {
-          const preview = content.startsWith('📷[image]') ? '📷 Photo' : content;
-          await sendNotification(
-            receiver.fcmToken,
-            `💬 ${senderName}`,
-            preview,
-            {
-              type: 'private_message',
-              senderId: senderId.toString(),
-              senderName,
-              receiverId: receiverId.toString()
-            }
-          );
-        }
-      } catch (err) {
-        console.log('FCM error:', err);
+    }
+
+    // Always send FCM notification regardless of online status
+    try {
+      const receiver = await User.findById(receiverId);
+      if (receiver && receiver.fcmToken) {
+        const preview = content.startsWith('📷[image]') ? '📷 Photo' : content;
+        await sendNotification(
+          receiver.fcmToken,
+          `💬 ${senderName}`,
+          preview,
+          {
+            type: 'private_message',
+            senderId: senderId.toString(),
+            senderName,
+            receiverId: receiverId.toString()
+          }
+        );
       }
+    } catch (err) {
+      console.log('FCM error:', err);
     }
   });
 
