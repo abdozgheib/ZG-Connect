@@ -6,6 +6,7 @@ const mongoose = require('mongoose');
 const path = require('path');
 const Message = require('./models/Message');
 const User = require('./models/User');
+const Group = require('./models/Group');
 const { sendNotification } = require('./notifications');
 const app = express();
 const server = http.createServer(app);
@@ -127,6 +128,24 @@ socket.on('private-message', async (data) => {
       content: content,
       groupId: groupId
     });
+    // Send FCM push to all group members who are not the sender
+    try {
+      const group = await Group.findById(groupId).populate('members', 'fcmToken');
+      if (group) {
+        const preview = content.startsWith('📷[image]') ? '📷 Photo' : content;
+        const notifPromises = group.members
+          .filter(m => m.fcmToken && m._id.toString() !== senderId.toString())
+          .map(m => sendNotification(
+            m.fcmToken,
+            `${senderName} in ${groupName}`,
+            preview,
+            { type: 'group_message', groupId: groupId.toString(), groupName, senderName }
+          ));
+        await Promise.allSettled(notifPromises);
+      }
+    } catch (err) {
+      console.log('Group FCM error:', err);
+    }
   });
 
   socket.on('join-group', (groupId) => {
