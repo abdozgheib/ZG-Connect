@@ -1,9 +1,55 @@
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 const auth = require('../middleware/auth');
 const User = require('../models/User');
 const Message = require('../models/Message');
 const Group = require('../models/Group');
+
+// Get last message preview for all contacts in ONE query
+router.get('/previews', auth, async (req, res) => {
+  try {
+    const myId = new mongoose.Types.ObjectId(req.user.id);
+    const me = await User.findById(req.user.id).select('contacts');
+    if (!me || !me.contacts.length) return res.json({});
+
+    const results = await Message.aggregate([
+      {
+        $match: {
+          group: { $exists: false },
+          $or: [{ sender: myId }, { receiver: myId }]
+        }
+      },
+      { $sort: { createdAt: -1 } },
+      {
+        $group: {
+          _id: {
+            $cond: {
+              if: { $eq: ['$sender', myId] },
+              then: '$receiver',
+              else: '$sender'
+            }
+          },
+          content: { $first: '$content' },
+          createdAt: { $first: '$createdAt' },
+          deleted: { $first: '$deleted' }
+        }
+      },
+      { $match: { _id: { $in: me.contacts } } }
+    ]);
+
+    const map = {};
+    results.forEach(r => {
+      map[r._id.toString()] = {
+        content: r.deleted ? 'This message was deleted' : r.content,
+        createdAt: r.createdAt
+      };
+    });
+    res.json(map);
+  } catch (err) {
+    res.status(500).json({ message: 'Something went wrong!' });
+  }
+});
 
 // Get all users
 router.get('/users', auth, async (req, res) => {

@@ -48,9 +48,12 @@ socket.on('private-message', async (data) => {
       sender: senderId,
       receiver: receiverId,
       content,
-      delivered: true
+      delivered: false
     });
     await message.save();
+
+    // Single tick: server saved the message
+    io.to(socket.id).emit('message-sent', { messageId: message._id });
 
   const receiverSocket = onlineUsers[receiverId];
     if (receiverSocket) {
@@ -127,6 +130,11 @@ socket.on('private-message', async (data) => {
 
   socket.on('join-group', (groupId) => {
     socket.join(groupId);
+  });
+
+  // Relay back to sender so their home screen updates preview instantly
+  socket.on('update-chat-preview', (data) => {
+    socket.emit('update-chat-preview', data);
   });
 
   socket.on('typing', (data) => {
