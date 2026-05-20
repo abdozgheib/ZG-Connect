@@ -160,7 +160,9 @@ socket.on('private-message', async (data) => {
     const userId = Object.keys(onlineUsers).find(k => onlineUsers[k] === socket.id);
     if (userId) {
       delete onlineUsers[userId];
-      await User.findByIdAndUpdate(userId, { online: false, lastSeen: Date.now() });
+      const lastSeen = Date.now();
+      await User.findByIdAndUpdate(userId, { online: false, lastSeen });
+      io.emit('user-last-seen', { userId, lastSeen });
       io.emit('online-users', Object.keys(onlineUsers));
     }
   });
