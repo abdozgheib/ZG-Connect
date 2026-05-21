@@ -99,6 +99,16 @@ router.get('/', auth, async (req, res) => {
   }
 });
 
+// Get sent request IDs
+router.get('/sent', auth, async (req, res) => {
+  try {
+    const me = await User.findById(req.user.id);
+    res.json(me.sentRequests.map(id => id.toString()));
+  } catch (err) {
+    res.status(500).json({ message: 'Something went wrong!' });
+  }
+});
+
 // Get pending requests
 router.get('/pending', auth, async (req, res) => {
   try {
