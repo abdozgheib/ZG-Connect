@@ -45,6 +45,17 @@ router.post('/avatar', auth, async (req, res) => {
   }
 });
 
+// Save avatar URL (uploaded directly from app to ImgBB)
+router.post('/avatar-url', auth, async (req, res) => {
+  try {
+    const { avatarUrl } = req.body;
+    await User.findByIdAndUpdate(req.user.id, { avatar: avatarUrl });
+    res.json({ success: true, avatar: avatarUrl });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // Update profile info
 router.put('/update', auth, async (req, res) => {
   try {
