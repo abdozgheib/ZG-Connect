@@ -9,7 +9,16 @@ const messageSchema = new mongoose.Schema({
   read: { type: Boolean, default: false },
   readAt: { type: Date },
   deleted: { type: Boolean, default: false },
-  deletedFor: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
+  deletedFor: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  replyTo: {
+    _id: String,
+    content: String,
+    senderName: String,
+  },
+  reactions: [{
+    userId: String,
+    emoji: String,
+  }]
 }, { timestamps: true });
 
 module.exports = mongoose.model('Message', messageSchema);

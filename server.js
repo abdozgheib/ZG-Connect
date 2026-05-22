@@ -45,11 +45,12 @@ io.on('connection', (socket) => {
   });
 
 socket.on('private-message', async (data) => {
-    const { senderId, receiverId, content, senderName } = data;
+    const { senderId, receiverId, content, senderName, replyTo } = data;
     const message = new Message({
       sender: senderId,
       receiver: receiverId,
       content,
+      replyTo: replyTo || null,
       delivered: false
     });
     await message.save();
@@ -64,6 +65,7 @@ socket.on('private-message', async (data) => {
         senderName,
         receiverId,
         content,
+        replyTo: replyTo || null,
         messageId: message._id,
         createdAt: message.createdAt
       });
@@ -111,14 +113,15 @@ socket.on('private-message', async (data) => {
   });
 
   socket.on('group-message', async (data) => {
-    const { senderId, groupId, content, senderName, groupName } = data;
-    const message = new Message({ sender: senderId, group: groupId, content });
+    const { senderId, groupId, content, senderName, groupName, replyTo } = data;
+    const message = new Message({ sender: senderId, group: groupId, content, replyTo: replyTo || null });
     await message.save();
     socket.to(groupId).emit('group-message', {
       senderId,
       senderName,
       groupId,
       content,
+      replyTo: replyTo || null,
       createdAt: message.createdAt
     });
     socket.to(groupId).emit('notification', {
@@ -155,6 +158,25 @@ socket.on('private-message', async (data) => {
   // Relay back to sender so their home screen updates preview instantly
   socket.on('update-chat-preview', (data) => {
     socket.emit('update-chat-preview', data);
+  });
+
+  socket.on('message-reaction', (data) => {
+    const { messageId, reaction, userId, receiverId } = data;
+
+    Message.findByIdAndUpdate(
+      messageId,
+      { $push: { reactions: { userId, emoji: reaction } } },
+      { new: true }
+    ).catch(err => console.log(err));
+
+    const receiverSocket = onlineUsers[receiverId];
+    if (receiverSocket) {
+      io.to(receiverSocket).emit('message-reaction', {
+        messageId,
+        reaction,
+        userId,
+      });
+    }
   });
 
   socket.on('typing', (data) => {
