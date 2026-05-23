@@ -207,6 +207,33 @@ socket.on('private-message', async (data) => {
     }
   });
 
+  socket.on('group-message-reaction', (data) => {
+    const { messageId, reaction, userId, groupId } = data;
+    if (!messageId || messageId === 'null' || messageId === 'undefined') {
+      console.log('Invalid messageId in group-message-reaction:', messageId);
+      return;
+    }
+    if (!userId || userId === 'null' || userId === 'undefined') {
+      console.log('Invalid userId in group-message-reaction:', userId);
+      return;
+    }
+    if (!groupId || groupId === 'null' || groupId === 'undefined') {
+      console.log('Invalid groupId in group-message-reaction:', groupId);
+      return;
+    }
+
+    Message.findByIdAndUpdate(
+      messageId,
+      { $push: { reactions: { userId, emoji: reaction } } }
+    ).catch(err => console.log(err));
+
+    socket.to(groupId).emit('group-message-reaction', {
+      messageId,
+      reaction,
+      userId,
+    });
+  });
+
   socket.on('typing', (data) => {
     const receiverSocket = onlineUsers[data.receiverId];
     if (receiverSocket) {
