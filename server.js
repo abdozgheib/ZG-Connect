@@ -39,7 +39,7 @@ io.on('connection', (socket) => {
   console.log('✅ User connected:', socket.id);
 
   socket.on('user-online', async (userId) => {
-    if (!userId || userId === 'null') return;
+    if (!userId || userId === 'null' || userId === 'undefined') return;
     onlineUsers[userId] = socket.id;
     await User.findByIdAndUpdate(userId, { online: true });
     io.emit('online-users', Object.keys(onlineUsers));
@@ -122,6 +122,18 @@ socket.on('private-message', async (data) => {
 
   socket.on('group-message', async (data) => {
     const { senderId, groupId, content, senderName, groupName, replyTo } = data;
+    if (!senderId || senderId === 'null' || senderId === 'undefined') {
+      console.log('Invalid senderId in group-message:', senderId);
+      return;
+    }
+    if (!groupId || groupId === 'null' || groupId === 'undefined') {
+      console.log('Invalid groupId in group-message:', groupId);
+      return;
+    }
+    if (!content) {
+      console.log('Empty content in group-message');
+      return;
+    }
     const message = new Message({ sender: senderId, group: groupId, content, replyTo: replyTo || null });
     await message.save();
     socket.to(groupId).emit('group-message', {
@@ -170,6 +182,14 @@ socket.on('private-message', async (data) => {
 
   socket.on('message-reaction', (data) => {
     const { messageId, reaction, userId, receiverId } = data;
+    if (!messageId || messageId === 'null' || messageId === 'undefined') {
+      console.log('Invalid messageId in message-reaction:', messageId);
+      return;
+    }
+    if (!userId || userId === 'null' || userId === 'undefined') {
+      console.log('Invalid userId in message-reaction:', userId);
+      return;
+    }
 
     Message.findByIdAndUpdate(
       messageId,
