@@ -18,7 +18,7 @@ app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] })
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
-app.use('/api/chat', require('./routes/chat'));
+app.use('/api/chat', require('./routes/chat')(io));
 app.use('/api/contacts', require('./routes/contacts'));
 app.use('/api/profile', require('./routes/profile'));
 
@@ -46,6 +46,12 @@ io.on('connection', (socket) => {
 
 socket.on('private-message', async (data) => {
     const { senderId, receiverId, content, senderName, replyTo } = data;
+
+    if (!senderId || !receiverId || !content) {
+      console.log('Invalid message data:', data);
+      return;
+    }
+
     const message = new Message({
       sender: senderId,
       receiver: receiverId,
@@ -133,13 +139,13 @@ socket.on('private-message', async (data) => {
     });
     // Send FCM push to all group members who are not the sender
     try {
-      const group = await Group.findById(groupId).populate('members', 'fcmToken');
+      const group = await Group.findById(groupId).populate('members.userId', 'fcmToken');
       if (group) {
         const preview = content.startsWith('📷[image]') ? '📷 Photo' : content;
         const notifPromises = group.members
-          .filter(m => m.fcmToken && m._id.toString() !== senderId.toString())
+          .filter(m => m.userId && m.userId.fcmToken && m.userId._id.toString() !== senderId.toString())
           .map(m => sendNotification(
-            m.fcmToken,
+            m.userId.fcmToken,
             `${senderName} in ${groupName}`,
             preview,
             { type: 'group_message', groupId: groupId.toString(), groupName, senderName }
