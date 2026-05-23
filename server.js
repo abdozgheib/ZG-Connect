@@ -39,6 +39,7 @@ io.on('connection', (socket) => {
   console.log('✅ User connected:', socket.id);
 
   socket.on('user-online', async (userId) => {
+    if (!userId || userId === 'null') return;
     onlineUsers[userId] = socket.id;
     await User.findByIdAndUpdate(userId, { online: true });
     io.emit('online-users', Object.keys(onlineUsers));
@@ -111,6 +112,7 @@ socket.on('private-message', async (data) => {
   // Message read
   socket.on('message-read', async (data) => {
     const { messageId, senderId } = data;
+    if (!messageId || !senderId) return;
     await Message.findByIdAndUpdate(messageId, { read: true, readAt: Date.now() });
     const senderSocket = onlineUsers[senderId];
     if (senderSocket) {
