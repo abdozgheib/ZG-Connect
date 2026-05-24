@@ -49,7 +49,7 @@ router.post('/register', async (req, res) => {
     await user.save();
 
     await transporter.sendMail({
-      from: '"ZG Connect" <support.zgconnect@gmail.com>',
+      from: '"ZG Connect" <support@zgconnect.app>',
       to: email,
       subject: 'ZG Connect - Email Verification',
       html: `
@@ -154,7 +154,7 @@ router.post('/resend-code', async (req, res) => {
     await user.save();
 
     await transporter.sendMail({
-      from: '"ZG Connect" <support.zgconnect@gmail.com>',
+      from: '"ZG Connect" <support@zgconnect.app>',
       to: email,
       subject: 'ZG Connect - New Verification Code',
       html: `
