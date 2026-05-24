@@ -2,10 +2,18 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 const User = require('../models/User');
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+const transporter = nodemailer.createTransport({
+  host: 'mail.privateemail.com',
+  port: 587,
+  secure: false,
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  }
+});
 
 router.post('/register', async (req, res) => {
   try {
@@ -40,8 +48,8 @@ router.post('/register', async (req, res) => {
     }
     await user.save();
 
-    await resend.emails.send({
-      from: 'ZG Connect <onboarding@resend.dev>',
+    await transporter.sendMail({
+      from: '"ZG Connect" <support.zgconnect@gmail.com>',
       to: email,
       subject: 'ZG Connect - Email Verification',
       html: `
@@ -145,8 +153,8 @@ router.post('/resend-code', async (req, res) => {
     user.verificationExpiry = expiry;
     await user.save();
 
-    await resend.emails.send({
-      from: 'ZG Connect <onboarding@resend.dev>',
+    await transporter.sendMail({
+      from: '"ZG Connect" <support.zgconnect@gmail.com>',
       to: email,
       subject: 'ZG Connect - New Verification Code',
       html: `
