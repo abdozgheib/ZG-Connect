@@ -18,7 +18,7 @@ app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] })
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
-app.use('/api/chat', require('./routes/chat')(io));
+app.use('/api/chat', require('./routes/chat')(io, onlineUsers));
 app.use('/api/contacts', require('./routes/contacts'));
 app.use('/api/profile', require('./routes/profile'));
 
@@ -32,7 +32,7 @@ app.get('/{*path}', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Track online users
+// Track online users (shared with routes)
 const onlineUsers = {};
 
 io.on('connection', (socket) => {

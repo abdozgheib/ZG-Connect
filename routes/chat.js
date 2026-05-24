@@ -10,7 +10,7 @@ function getMyRole(group, userId) {
   return m ? m.role : null;
 }
 
-module.exports = (io) => {
+module.exports = (io, onlineUsers) => {
   const router = express.Router();
 
   // Get last message preview for all contacts in ONE query
@@ -83,6 +83,34 @@ module.exports = (io) => {
     }
   });
 
+  // Create group (new UI) — creator becomes owner, notifies members
+  router.post('/groups/create', auth, async (req, res) => {
+    try {
+      const { name, avatar, memberIds, description } = req.body;
+      if (!name || !name.trim()) return res.status(400).json({ message: 'Group name is required!' });
+      const memberDocs = (memberIds || []).map(id => ({ userId: id, role: 'member', joinedAt: new Date() }));
+      const group = new Group({
+        name: name.trim(),
+        description: description || '',
+        avatar: avatar || '',
+        owner: req.user.id,
+        members: [{ userId: req.user.id, role: 'owner', joinedAt: new Date() }, ...memberDocs]
+      });
+      await group.save();
+      const populated = await Group.findById(group._id).populate('members.userId', 'name avatar');
+      const allMemberIds = [req.user.id, ...(memberIds || [])];
+      if (onlineUsers) {
+        for (const memberId of allMemberIds) {
+          const socketId = onlineUsers[memberId.toString()];
+          if (socketId) io.to(socketId).emit('group-created', { group: populated });
+        }
+      }
+      res.json(populated);
+    } catch (err) {
+      res.status(500).json({ message: 'Something went wrong!' });
+    }
+  });
+
   // Create group — creator becomes owner
   router.post('/groups', auth, async (req, res) => {
     try {
@@ -102,7 +130,7 @@ module.exports = (io) => {
   // Get my groups
   router.get('/groups', auth, async (req, res) => {
     try {
-      const groups = await Group.find({ 'members.userId': req.user.id })
+      const groups = await Group.find({ 'members.userId': req.user.id, isDeleted: { $ne: true } })
         .populate('members.userId', 'name avatar');
       res.json(groups);
     } catch (err) {
@@ -117,6 +145,28 @@ module.exports = (io) => {
         .populate('sender', 'name')
         .sort({ createdAt: 1 });
       res.json(messages);
+    } catch (err) {
+      res.status(500).json({ message: 'Something went wrong!' });
+    }
+  });
+
+  // Get group media (images)
+  router.get('/groups/:groupId/media', auth, async (req, res) => {
+    try {
+      const group = await Group.findById(req.params.groupId);
+      if (!group) return res.status(404).json({ message: 'Group not found!' });
+      const isMember = group.members.some(m => m.userId.toString() === req.user.id);
+      if (!isMember) return res.status(403).json({ message: 'Not a member!' });
+      const messages = await Message.find({
+        group: req.params.groupId,
+        content: { $regex: '^📷\\[image\\]' },
+        deleted: { $ne: true }
+      }).sort({ createdAt: -1 }).limit(50);
+      const media = messages.map(m => {
+        const parts = m.content.replace('📷[image]', '').split('[caption]');
+        return { _id: m._id, url: parts[0], caption: parts[1] || '', createdAt: m.createdAt };
+      });
+      res.json(media);
     } catch (err) {
       res.status(500).json({ message: 'Something went wrong!' });
     }
@@ -275,9 +325,15 @@ module.exports = (io) => {
         newOwner.role = 'owner';
       }
 
+      const leavingUser = await User.findById(req.user.id).select('name');
       group.members = group.members.filter(m => m.userId.toString() !== req.user.id);
       await group.save();
       const updated = await Group.findById(group._id).populate('members.userId', 'name avatar');
+      io.to(req.params.groupId).emit('group-member-left', {
+        groupId: req.params.groupId,
+        userId: req.user.id,
+        userName: leavingUser?.name || 'Someone'
+      });
       io.to(req.params.groupId).emit('group-updated', { groupId: req.params.groupId, group: updated });
       res.json({ message: 'Left group!' });
     } catch (err) {
@@ -285,7 +341,7 @@ module.exports = (io) => {
     }
   });
 
-  // Delete group — owner only
+  // Delete group — owner only (soft delete)
   router.delete('/groups/:groupId', auth, async (req, res) => {
     try {
       const group = await Group.findById(req.params.groupId);
@@ -293,8 +349,7 @@ module.exports = (io) => {
       if (getMyRole(group, req.user.id) !== 'owner') {
         return res.status(403).json({ message: 'Only owner can delete the group!' });
       }
-      await Group.findByIdAndDelete(req.params.groupId);
-      await Message.deleteMany({ group: req.params.groupId });
+      await Group.findByIdAndUpdate(req.params.groupId, { isDeleted: true });
       io.to(req.params.groupId).emit('group-updated', { groupId: req.params.groupId, deleted: true });
       res.json({ message: 'Group deleted!' });
     } catch (err) {
