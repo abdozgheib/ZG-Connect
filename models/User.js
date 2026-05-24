@@ -12,7 +12,10 @@ const userSchema = new mongoose.Schema({
   sentRequests: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   fcmToken: { type: String, default: '' },
   online: { type: Boolean, default: false },
-  lastSeen: { type: Date, default: Date.now }
+  lastSeen: { type: Date, default: Date.now },
+  isVerified: { type: Boolean, default: false },
+  verificationCode: { type: String, default: null },
+  verificationExpiry: { type: Date, default: null }
 }, { timestamps: true, strict: false });
 
 module.exports = mongoose.model('User', userSchema);
