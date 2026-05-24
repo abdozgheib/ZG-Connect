@@ -170,6 +170,33 @@ module.exports = (io, onlineUsers) => {
     }
   });
 
+  // Private chat all media (images, audio, links)
+  router.get('/media-all/:userId', auth, async (req, res) => {
+    try {
+      const messages = await Message.find({
+        $and: [
+          {
+            $or: [
+              { sender: req.user.id, receiver: req.params.userId },
+              { sender: req.params.userId, receiver: req.user.id }
+            ]
+          },
+          {
+            $or: [
+              { content: { $regex: '^📷' } },
+              { content: { $regex: '^🎤' } },
+              { content: { $regex: 'https?://' } }
+            ]
+          }
+        ],
+        deleted: { $ne: true }
+      }).sort({ createdAt: -1 });
+      res.json(messages);
+    } catch (err) {
+      res.status(500).json({ message: 'Something went wrong!' });
+    }
+  });
+
   // Get group media (images)
   router.get('/groups/:groupId/media', auth, async (req, res) => {
     try {
@@ -187,6 +214,28 @@ module.exports = (io, onlineUsers) => {
         return { _id: m._id, url: parts[0], caption: parts[1] || '', createdAt: m.createdAt };
       });
       res.json(media);
+    } catch (err) {
+      res.status(500).json({ message: 'Something went wrong!' });
+    }
+  });
+
+  // Group all media (images, audio, links)
+  router.get('/groups/:groupId/all-media', auth, async (req, res) => {
+    try {
+      const group = await Group.findById(req.params.groupId);
+      if (!group) return res.status(404).json({ message: 'Group not found!' });
+      const isMember = group.members.some(m => m.userId.toString() === req.user.id);
+      if (!isMember) return res.status(403).json({ message: 'Not a member!' });
+      const messages = await Message.find({
+        group: req.params.groupId,
+        $or: [
+          { content: { $regex: '^📷' } },
+          { content: { $regex: '^🎤' } },
+          { content: { $regex: 'https?://' } }
+        ],
+        deleted: { $ne: true }
+      }).sort({ createdAt: -1 });
+      res.json(messages);
     } catch (err) {
       res.status(500).json({ message: 'Something went wrong!' });
     }
