@@ -15,17 +15,35 @@ const transporter = nodemailer.createTransport({
 
 router.post('/register', async (req, res) => {
   try {
+    console.log('Register request:', req.body);
+    console.log('EMAIL_USER:', process.env.EMAIL_USER);
+    console.log('EMAIL_PASS exists:', !!process.env.EMAIL_PASS);
+
     const { name, email, password } = req.body;
     const existing = await User.findOne({ email });
-    if (existing) return res.status(400).json({ message: 'Email already registered!' });
-    const hashed = await bcrypt.hash(password, 10);
-    const user = new User({ name, email, password: hashed });
+
+    if (existing && existing.isVerified) {
+      return res.status(400).json({ message: 'Email already registered!' });
+    }
 
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     const expiry = new Date(Date.now() + 10 * 60 * 1000);
-    user.verificationCode = code;
-    user.verificationExpiry = expiry;
-    user.isVerified = false;
+
+    let user;
+    if (existing && !existing.isVerified) {
+      // Allow re-registration for unverified accounts (update name, password, code)
+      existing.name = name;
+      existing.password = await bcrypt.hash(password, 10);
+      existing.verificationCode = code;
+      existing.verificationExpiry = expiry;
+      user = existing;
+    } else {
+      const hashed = await bcrypt.hash(password, 10);
+      user = new User({ name, email, password: hashed });
+      user.verificationCode = code;
+      user.verificationExpiry = expiry;
+      user.isVerified = false;
+    }
     await user.save();
 
     await transporter.sendMail({
