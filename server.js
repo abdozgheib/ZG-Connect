@@ -12,6 +12,9 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
+// Track online users — declared here so routes can reference it at registration time
+const onlineUsers = {};
+
 app.use(express.json());
 // Serve static files; `extensions: ['html']` lets /home serve home.html, etc.
 app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
@@ -31,9 +34,6 @@ mongoose.connect(process.env.MONGO_URI)
 app.get('/{*path}', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
-
-// Track online users (shared with routes)
-const onlineUsers = {};
 
 io.on('connection', (socket) => {
   console.log('✅ User connected:', socket.id);

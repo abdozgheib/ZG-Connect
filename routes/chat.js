@@ -86,9 +86,19 @@ module.exports = (io, onlineUsers) => {
   // Create group (new UI) — creator becomes owner, notifies members
   router.post('/groups/create', auth, async (req, res) => {
     try {
+      console.log('Create group request body:', req.body);
+      console.log('Create group user:', req.user);
+
       const { name, avatar, memberIds, description } = req.body;
-      if (!name || !name.trim()) return res.status(400).json({ message: 'Group name is required!' });
-      const memberDocs = (memberIds || []).map(id => ({ userId: id, role: 'member', joinedAt: new Date() }));
+
+      if (!name || !name.trim()) {
+        return res.status(400).json({ message: 'Group name is required' });
+      }
+      if (!memberIds || memberIds.length === 0) {
+        return res.status(400).json({ message: 'Add at least one member' });
+      }
+
+      const memberDocs = memberIds.map(id => ({ userId: id, role: 'member', joinedAt: new Date() }));
       const group = new Group({
         name: name.trim(),
         description: description || '',
@@ -97,17 +107,27 @@ module.exports = (io, onlineUsers) => {
         members: [{ userId: req.user.id, role: 'owner', joinedAt: new Date() }, ...memberDocs]
       });
       await group.save();
+      console.log('Group created:', group._id);
+
       const populated = await Group.findById(group._id).populate('members.userId', 'name avatar');
-      const allMemberIds = [req.user.id, ...(memberIds || [])];
-      if (onlineUsers) {
-        for (const memberId of allMemberIds) {
-          const socketId = onlineUsers[memberId.toString()];
-          if (socketId) io.to(socketId).emit('group-created', { group: populated });
+
+      // Notify online members
+      const allMemberIds = [req.user.id, ...memberIds];
+      for (const memberId of allMemberIds) {
+        const socketId = onlineUsers[memberId.toString()];
+        if (socketId) {
+          io.to(socketId).emit('group-created', {
+            groupId: group._id,
+            name: group.name,
+            avatar: group.avatar,
+          });
         }
       }
+
       res.json(populated);
     } catch (err) {
-      res.status(500).json({ message: 'Something went wrong!' });
+      console.log('Create group error:', err);
+      res.status(500).json({ message: 'Could not create group: ' + err.message });
     }
   });
 
