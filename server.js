@@ -253,6 +253,58 @@ socket.on('private-message', async (data) => {
     }
   });
 
+  // Call offer - caller sends to receiver
+  socket.on('call-offer', (data) => {
+    const { callerId, callerName, callerAvatar,
+            targetUserId, offer, callType } = data;
+    const targetSocket = onlineUsers[targetUserId];
+    if (targetSocket) {
+      io.to(targetSocket).emit('incoming-call', {
+        callerId,
+        callerName,
+        callerAvatar,
+        offer: JSON.stringify(offer),
+        callType: callType || 'voice',
+      });
+    }
+  });
+
+  // Call answer - receiver sends answer to caller
+  socket.on('call-answer', (data) => {
+    const { callerId, answer } = data;
+    const callerSocket = onlineUsers[callerId];
+    if (callerSocket) {
+      io.to(callerSocket).emit('call-answered', { answer });
+    }
+  });
+
+  // Call reject
+  socket.on('call-reject', (data) => {
+    const { callerId } = data;
+    const callerSocket = onlineUsers[callerId];
+    if (callerSocket) {
+      io.to(callerSocket).emit('call-rejected');
+    }
+  });
+
+  // Call end
+  socket.on('call-end', (data) => {
+    const { targetUserId } = data;
+    const targetSocket = onlineUsers[targetUserId];
+    if (targetSocket) {
+      io.to(targetSocket).emit('call-ended');
+    }
+  });
+
+  // ICE candidate exchange
+  socket.on('call-ice-candidate', (data) => {
+    const { candidate, targetUserId } = data;
+    const targetSocket = onlineUsers[targetUserId];
+    if (targetSocket) {
+      io.to(targetSocket).emit('call-ice-candidate', { candidate });
+    }
+  });
+
   socket.on('disconnect', async () => {
     const userId = Object.keys(onlineUsers).find(k => onlineUsers[k] === socket.id);
     if (userId) {
