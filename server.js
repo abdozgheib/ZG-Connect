@@ -284,18 +284,25 @@ socket.on('private-message', async (data) => {
         offer: JSON.stringify(offer),
         callType: callType || 'voice',
       });
-      socket.emit('call-ringing', {});
+      const targetSocketId = onlineUsers[targetUserId];
+      if (targetSocketId) {
+        socket.emit('call-ringing', {});
+      }
       try {
+        const CallLog = require('./models/CallLog');
         const callLog = new CallLog({
-          callerId,
+          callerId: callerId,
           receiverId: targetUserId,
           callType: callType || 'voice',
           status: 'missed',
         });
         await callLog.save();
+        console.log('CallLog saved:', callLog._id);
         global.pendingCallLogs = global.pendingCallLogs || {};
         global.pendingCallLogs[`${callerId}-${targetUserId}`] = callLog._id;
-      } catch (e) {}
+      } catch (e) {
+        console.log('CallLog save error:', e);
+      }
     }
   });
 

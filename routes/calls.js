@@ -13,6 +13,8 @@ router.get('/logs', auth, async (req, res) => {
     .populate('callerId', 'name avatar')
     .populate('receiverId', 'name avatar');
 
+    console.log('Call logs found:', logs.length);
+
     const formatted = logs.map(log => {
       const isOutgoing = log.callerId._id.toString() === req.user.id;
       const contact = isOutgoing ? log.receiverId : log.callerId;
@@ -30,6 +32,7 @@ router.get('/logs', auth, async (req, res) => {
     });
     res.json(formatted);
   } catch (err) {
+    console.log('Call logs error:', err);
     res.status(500).json({ message: 'Something went wrong!' });
   }
 });
