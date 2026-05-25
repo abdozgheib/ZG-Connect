@@ -54,8 +54,20 @@ socket.on('private-message', async (data) => {
       return;
     }
 
-    const receiver = await User.findById(receiverId);
-    if (receiver?.blockedUsers?.some(id => id.toString() === senderId)) return;
+    const senderUser = await User.findById(senderId);
+    const receiverUser = await User.findById(receiverId);
+
+    if (!receiverUser || !senderUser) return;
+
+    // Check if sender is blocked by receiver
+    if (receiverUser.blockedUsers && receiverUser.blockedUsers.map(id => id.toString()).includes(senderId.toString())) {
+      return; // silently drop message
+    }
+
+    // Check if receiver is blocked by sender (optional - sender blocked receiver)
+    if (senderUser.blockedUsers && senderUser.blockedUsers.map(id => id.toString()).includes(receiverId.toString())) {
+      return; // silently drop message
+    }
 
     const message = new Message({
       sender: senderId,
