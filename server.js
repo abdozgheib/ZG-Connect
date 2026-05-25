@@ -7,6 +7,7 @@ const path = require('path');
 const Message = require('./models/Message');
 const User = require('./models/User');
 const Group = require('./models/Group');
+const CallLog = require('./models/CallLog');
 const { sendNotification } = require('./notifications');
 const app = express();
 const server = http.createServer(app);
@@ -25,6 +26,7 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/chat', require('./routes/chat')(io, onlineUsers));
 app.use('/api/contacts', require('./routes/contacts')(io, onlineUsers));
 app.use('/api/profile', require('./routes/profile'));
+app.use('/api/calls', require('./routes/calls'));
 
 // Connect to MongoDB
 mongoose.connect(process.env.MONGO_URI)
@@ -270,7 +272,7 @@ socket.on('private-message', async (data) => {
   });
 
   // Call offer - caller sends to receiver
-  socket.on('call-offer', (data) => {
+  socket.on('call-offer', async (data) => {
     const { callerId, callerName, callerAvatar,
             targetUserId, offer, callType } = data;
     const targetSocket = onlineUsers[targetUserId];
@@ -282,25 +284,51 @@ socket.on('private-message', async (data) => {
         offer: JSON.stringify(offer),
         callType: callType || 'voice',
       });
+      socket.emit('call-ringing', {});
+      try {
+        const callLog = new CallLog({
+          callerId,
+          receiverId: targetUserId,
+          callType: callType || 'voice',
+          status: 'missed',
+        });
+        await callLog.save();
+        global.pendingCallLogs = global.pendingCallLogs || {};
+        global.pendingCallLogs[`${callerId}-${targetUserId}`] = callLog._id;
+      } catch (e) {}
     }
   });
 
   // Call answer - receiver sends answer to caller
-  socket.on('call-answer', (data) => {
+  socket.on('call-answer', async (data) => {
     const { callerId, answer } = data;
     const callerSocket = onlineUsers[callerId];
     if (callerSocket) {
       io.to(callerSocket).emit('call-answered', { answer });
     }
+    try {
+      const key = Object.keys(global.pendingCallLogs || {}).find(k => k.includes(callerId));
+      if (key && global.pendingCallLogs[key]) {
+        await CallLog.findByIdAndUpdate(global.pendingCallLogs[key], { status: 'completed' });
+        delete global.pendingCallLogs[key];
+      }
+    } catch (e) {}
   });
 
   // Call reject
-  socket.on('call-reject', (data) => {
+  socket.on('call-reject', async (data) => {
     const { callerId } = data;
     const callerSocket = onlineUsers[callerId];
     if (callerSocket) {
       io.to(callerSocket).emit('call-rejected');
     }
+    try {
+      const key = Object.keys(global.pendingCallLogs || {}).find(k => k.includes(callerId));
+      if (key && global.pendingCallLogs[key]) {
+        await CallLog.findByIdAndUpdate(global.pendingCallLogs[key], { status: 'declined' });
+        delete global.pendingCallLogs[key];
+      }
+    } catch (e) {}
   });
 
   // Call end
