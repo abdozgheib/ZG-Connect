@@ -40,8 +40,8 @@ router.post('/register', async (req, res) => {
     }
     await user.save();
 
-    await resend.emails.send({
-      from: 'ZG Connect <onboarding@resend.dev>',
+    const result = await resend.emails.send({
+      from: 'ZG Connect <noreply@zgconnect.app>',
       to: email,
       subject: 'ZG Connect - Email Verification',
       html: `
@@ -69,6 +69,7 @@ router.post('/register', async (req, res) => {
         </div>
       `
     });
+    console.log('Resend result:', JSON.stringify(result));
 
     res.json({
       message: 'Registration successful! Check your email for verification code.',
@@ -145,8 +146,8 @@ router.post('/resend-code', async (req, res) => {
     user.verificationExpiry = expiry;
     await user.save();
 
-    await resend.emails.send({
-      from: 'ZG Connect <onboarding@resend.dev>',
+    const result = await resend.emails.send({
+      from: 'ZG Connect <noreply@zgconnect.app>',
       to: email,
       subject: 'ZG Connect - New Verification Code',
       html: `
@@ -177,6 +178,7 @@ router.post('/resend-code', async (req, res) => {
         </div>
       `
     });
+    console.log('Resend result:', JSON.stringify(result));
 
     res.json({ message: 'New code sent to your email!' });
   } catch (err) {
