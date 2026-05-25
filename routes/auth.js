@@ -213,11 +213,17 @@ router.post('/login', async (req, res) => {
     if (!match) return res.status(400).json({ message: 'Wrong password!' });
     const token = jwt.sign({ id: user._id, name: user.name }, process.env.JWT_SECRET, { expiresIn: '30d' });
     // Upsert user in Stream system
-    await streamClient.upsertUsers([{
-      id: user._id.toString(),
-      name: user.name,
-      image: user.avatar || '',
-    }]);
+    console.log('Upserting user in Stream:', user._id.toString());
+    try {
+      await streamClient.upsertUsers([{
+        id: user._id.toString(),
+        name: user.name,
+        image: user.avatar || '',
+      }]);
+      console.log('Stream upsert successful for:', user._id.toString());
+    } catch (streamErr) {
+      console.log('Stream upsert error:', streamErr.message);
+    }
     const streamToken = streamClient.generateUserToken({ user_id: user._id.toString() });
     res.json({ token, streamToken, user: { id: user._id, name: user.name, email: user.email } });
   } catch (err) {
