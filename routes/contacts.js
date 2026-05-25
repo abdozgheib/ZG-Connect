@@ -74,6 +74,15 @@ router.post('/accept', auth, async (req, res) => {
     other.sentRequests = other.sentRequests.filter(id => id.toString() !== req.user.id);
     await other.save();
 
+    const accepterSocket = onlineUsers[req.user.id];
+    if (accepterSocket) {
+      io.to(accepterSocket).emit('contact-accepted', { userId });
+    }
+    const requesterSocket = onlineUsers[userId];
+    if (requesterSocket) {
+      io.to(requesterSocket).emit('contact-accepted', { userId: req.user.id });
+    }
+
     res.json({ message: 'Contact accepted!' });
   } catch (err) {
     res.status(500).json({ message: 'Something went wrong!' });
