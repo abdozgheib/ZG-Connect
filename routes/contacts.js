@@ -182,5 +182,15 @@ router.post('/block', auth, async (req, res) => {
   }
 });
 
+router.post('/report', auth, async (req, res) => {
+  try {
+    const { userId } = req.body;
+    console.log(`User ${req.user.id} reported user ${userId}`);
+    res.json({ message: 'Report received!' });
+  } catch (err) {
+    res.status(500).json({ message: 'Something went wrong!' });
+  }
+});
+
 return router;
 };
