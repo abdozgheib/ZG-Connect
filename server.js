@@ -20,6 +20,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
 
 // Routes
+app.get('/api/health', (req, res) => res.json({ ok: true }));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/chat', require('./routes/chat')(io, onlineUsers));
 app.use('/api/contacts', require('./routes/contacts')(io, onlineUsers));
@@ -316,6 +317,10 @@ socket.on('private-message', async (data) => {
     }
   });
 });
+
+setInterval(() => {
+  fetch('https://zg-connect.onrender.com/api/health').catch(() => {});
+}, 10 * 60 * 1000);
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
