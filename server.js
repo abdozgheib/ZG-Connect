@@ -22,7 +22,7 @@ app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] })
 // Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/chat', require('./routes/chat')(io, onlineUsers));
-app.use('/api/contacts', require('./routes/contacts'));
+app.use('/api/contacts', require('./routes/contacts')(io, onlineUsers));
 app.use('/api/profile', require('./routes/profile'));
 
 // Connect to MongoDB

@@ -1,7 +1,9 @@
 const express = require('express');
-const router = express.Router();
 const auth = require('../middleware/auth');
 const User = require('../models/User');
+
+module.exports = (io, onlineUsers) => {
+const router = express.Router();
 
 // Search users by name or phone
 router.get('/search', auth, async (req, res) => {
@@ -41,6 +43,14 @@ router.post('/request', auth, async (req, res) => {
     // Add to pending requests of other user
     other.pendingRequests.push(req.user.id);
     await other.save();
+
+    const receiverSocket = onlineUsers[userId];
+    if (receiverSocket) {
+      io.to(receiverSocket).emit('contact-request', {
+        from: req.user.id,
+        fromName: me.name
+      });
+    }
 
     res.json({ message: 'Contact request sent!' });
   } catch (err) {
@@ -109,6 +119,16 @@ router.get('/sent', auth, async (req, res) => {
   }
 });
 
+// Get pending requests count
+router.get('/requests/count', auth, async (req, res) => {
+  try {
+    const me = await User.findById(req.user.id);
+    res.json({ count: me.pendingRequests.length });
+  } catch (err) {
+    res.status(500).json({ message: 'Something went wrong!' });
+  }
+});
+
 // Get pending requests
 router.get('/pending', auth, async (req, res) => {
   try {
@@ -131,4 +151,5 @@ router.delete('/:contactId', auth, async (req, res) => {
   }
 });
 
-module.exports = router;
+return router;
+};
