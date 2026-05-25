@@ -182,6 +182,27 @@ router.post('/block', auth, async (req, res) => {
   }
 });
 
+router.get('/blocked', auth, async (req, res) => {
+  try {
+    const me = await User.findById(req.user.id).populate('blockedUsers', '-password');
+    res.json(me.blockedUsers || []);
+  } catch (err) {
+    res.status(500).json({ message: 'Something went wrong!' });
+  }
+});
+
+router.post('/unblock', auth, async (req, res) => {
+  try {
+    const { userId } = req.body;
+    const me = await User.findById(req.user.id);
+    me.blockedUsers = (me.blockedUsers || []).filter(id => id.toString() !== userId);
+    await me.save();
+    res.json({ message: 'User unblocked!' });
+  } catch (err) {
+    res.status(500).json({ message: 'Something went wrong!' });
+  }
+});
+
 router.post('/report', auth, async (req, res) => {
   try {
     const { userId } = req.body;
