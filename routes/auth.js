@@ -117,6 +117,12 @@ router.post('/verify', async (req, res) => {
       { expiresIn: '30d' }
     );
 
+    // Upsert user in Stream system
+    await streamClient.upsertUsers([{
+      id: user._id.toString(),
+      name: user.name,
+      image: user.avatar || '',
+    }]);
     const streamToken = streamClient.generateUserToken({ user_id: user._id.toString() });
     res.json({
       success: true,
@@ -206,6 +212,12 @@ router.post('/login', async (req, res) => {
     const match = await bcrypt.compare(password, user.password);
     if (!match) return res.status(400).json({ message: 'Wrong password!' });
     const token = jwt.sign({ id: user._id, name: user.name }, process.env.JWT_SECRET, { expiresIn: '30d' });
+    // Upsert user in Stream system
+    await streamClient.upsertUsers([{
+      id: user._id.toString(),
+      name: user.name,
+      image: user.avatar || '',
+    }]);
     const streamToken = streamClient.generateUserToken({ user_id: user._id.toString() });
     res.json({ token, streamToken, user: { id: user._id, name: user.name, email: user.email } });
   } catch (err) {
