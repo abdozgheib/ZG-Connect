@@ -160,5 +160,27 @@ router.delete('/:contactId', auth, async (req, res) => {
   }
 });
 
+router.post('/block', auth, async (req, res) => {
+  try {
+    const { userId } = req.body;
+    const me = await User.findById(req.user.id);
+    const other = await User.findById(userId);
+    if (!other) return res.status(404).json({ message: 'User not found' });
+    me.contacts = me.contacts.filter(id => id.toString() !== userId);
+    me.sentRequests = me.sentRequests.filter(id => id.toString() !== userId);
+    me.pendingRequests = me.pendingRequests.filter(id => id.toString() !== userId);
+    if (!me.blockedUsers) me.blockedUsers = [];
+    me.blockedUsers.push(userId);
+    await me.save();
+    other.contacts = other.contacts.filter(id => id.toString() !== req.user.id);
+    other.sentRequests = other.sentRequests.filter(id => id.toString() !== req.user.id);
+    other.pendingRequests = other.pendingRequests.filter(id => id.toString() !== req.user.id);
+    await other.save();
+    res.json({ message: 'User blocked!' });
+  } catch (err) {
+    res.status(500).json({ message: 'Something went wrong!' });
+  }
+});
+
 return router;
 };
