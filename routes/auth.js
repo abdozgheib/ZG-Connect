@@ -3,7 +3,10 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Resend } = require('resend');
+const { StreamClient } = require('@stream-io/node-sdk');
 const User = require('../models/User');
+
+const streamClient = new StreamClient('uh4s4bvybg5z', 'j2esvzjmfj8shtrdkjgwkcqprwsmy4s3z39s9847q6puvm7ujtf839atstmy8kj4');
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
@@ -114,9 +117,11 @@ router.post('/verify', async (req, res) => {
       { expiresIn: '30d' }
     );
 
+    const streamToken = streamClient.generateUserToken({ user_id: user._id.toString() });
     res.json({
       success: true,
       token,
+      streamToken,
       user: {
         id: user._id,
         name: user.name,
@@ -201,7 +206,8 @@ router.post('/login', async (req, res) => {
     const match = await bcrypt.compare(password, user.password);
     if (!match) return res.status(400).json({ message: 'Wrong password!' });
     const token = jwt.sign({ id: user._id, name: user.name }, process.env.JWT_SECRET, { expiresIn: '30d' });
-    res.json({ token, user: { id: user._id, name: user.name, email: user.email } });
+    const streamToken = streamClient.generateUserToken({ user_id: user._id.toString() });
+    res.json({ token, streamToken, user: { id: user._id, name: user.name, email: user.email } });
   } catch (err) {
     res.status(500).json({ message: 'Something went wrong!' });
   }
