@@ -285,10 +285,7 @@ socket.on('private-message', async (data) => {
         callType: callType || 'voice',
         callId: offer?.callId || callId,
       });
-      const targetSocketId = onlineUsers[targetUserId];
-      if (targetSocketId) {
-        socket.emit('call-ringing', {});
-      }
+      socket.emit('call-ringing', {});
       try {
         const CallLog = require('./models/CallLog');
         const callLog = new CallLog({
@@ -304,6 +301,15 @@ socket.on('private-message', async (data) => {
       } catch (e) {
         console.log('CallLog save error:', e);
       }
+    }
+  });
+
+  // Receiver accepted — relay to caller so they join Stream
+  socket.on('call-answered-stream', (data) => {
+    const { callerId } = data;
+    const callerSocket = onlineUsers[callerId];
+    if (callerSocket) {
+      io.to(callerSocket).emit('call-answered-stream');
     }
   });
 
