@@ -10,7 +10,6 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@stream-io/node-sdk": "^0.7.59",
     "axios": "^1.16.1",
     "bcryptjs": "^3.0.3",
     "dotenv": "^17.4.2",
