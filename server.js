@@ -28,6 +28,15 @@ app.use('/api/contacts', require('./routes/contacts')(io, onlineUsers));
 app.use('/api/profile', require('./routes/profile'));
 app.use('/api/calls', require('./routes/calls'));
 
+app.post('/api/calls/decline', async (req, res) => {
+  const { callerId } = req.body;
+  const callerSocket = onlineUsers[callerId];
+  if (callerSocket) {
+    io.to(callerSocket).emit('call-rejected');
+  }
+  res.json({ ok: true });
+});
+
 // Connect to MongoDB
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('✅ Connected to MongoDB!'))
@@ -273,34 +282,60 @@ socket.on('private-message', async (data) => {
 
   // Call offer - caller sends to receiver
   socket.on('call-offer', async (data) => {
-    const { callerId, callerName, callerAvatar,
-            targetUserId, offer, callType, callId } = data;
+    const { callerId, callerName, callerAvatar, targetUserId, offer, callType } = data;
     const targetSocket = onlineUsers[targetUserId];
+
+    // If receiver is online, send via socket as before
     if (targetSocket) {
       io.to(targetSocket).emit('incoming-call', {
         callerId,
         callerName,
         callerAvatar,
-        offer: JSON.stringify(offer),
+        offer: typeof offer === 'string' ? offer : JSON.stringify(offer),
         callType: callType || 'voice',
-        callId: offer?.callId || callId,
       });
       socket.emit('call-ringing', {});
-      try {
-        const CallLog = require('./models/CallLog');
-        const callLog = new CallLog({
-          callerId: callerId,
-          receiverId: targetUserId,
-          callType: callType || 'voice',
-          status: 'missed',
+    }
+
+    // Always send FCM notification (works for background/closed app)
+    try {
+      const receiver = await User.findById(targetUserId);
+      if (receiver && receiver.fcmToken) {
+        const { getMessaging } = require('firebase-admin/messaging');
+        await getMessaging().send({
+          token: receiver.fcmToken,
+          android: {
+            priority: 'high',
+            ttl: 30000,
+          },
+          data: {
+            type: 'incoming_call',
+            callerId: String(callerId),
+            callerName: String(callerName),
+            callerAvatar: String(callerAvatar || ''),
+            offer: typeof offer === 'string' ? offer : JSON.stringify(offer),
+            callType: String(callType || 'voice'),
+          },
         });
-        await callLog.save();
-        console.log('CallLog saved:', callLog._id);
-        global.pendingCallLogs = global.pendingCallLogs || {};
-        global.pendingCallLogs[`${callerId}-${targetUserId}`] = callLog._id;
-      } catch (e) {
-        console.log('CallLog save error:', e);
+        console.log('Call FCM sent to:', receiver.name);
       }
+    } catch (e) {
+      console.log('Call FCM error:', e.message);
+    }
+
+    // Save call log
+    try {
+      const callLog = new CallLog({
+        callerId,
+        receiverId: targetUserId,
+        callType: callType || 'voice',
+        status: 'missed',
+      });
+      await callLog.save();
+      global.pendingCallLogs = global.pendingCallLogs || {};
+      global.pendingCallLogs[`${callerId}-${targetUserId}`] = callLog._id;
+    } catch (e) {
+      console.log('CallLog error:', e);
     }
   });
 
