@@ -48,4 +48,7 @@ async function sendNotification(fcmToken, title, body, data = {}) {
   }
 }
 
+// Initialize Firebase at startup so getMessaging() works immediately
+try { getFirebaseApp(); } catch (e) { console.log('Firebase init warning:', e.message); }
+
 module.exports = { sendNotification };
