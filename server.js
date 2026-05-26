@@ -274,7 +274,7 @@ socket.on('private-message', async (data) => {
   // Call offer - caller sends to receiver
   socket.on('call-offer', async (data) => {
     const { callerId, callerName, callerAvatar,
-            targetUserId, offer, callType } = data;
+            targetUserId, offer, callType, callId } = data;
     const targetSocket = onlineUsers[targetUserId];
     if (targetSocket) {
       io.to(targetSocket).emit('incoming-call', {
@@ -283,6 +283,7 @@ socket.on('private-message', async (data) => {
         callerAvatar,
         offer: JSON.stringify(offer),
         callType: callType || 'voice',
+        callId: offer?.callId || callId,
       });
       const targetSocketId = onlineUsers[targetUserId];
       if (targetSocketId) {
