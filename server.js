@@ -398,6 +398,15 @@ socket.on('private-message', async (data) => {
     }
   });
 
+  // Camera on/off — relay to the other peer so they can show a placeholder
+  socket.on('camera-toggle', (data) => {
+    const { targetUserId, cameraOff } = data;
+    const targetSocket = onlineUsers[targetUserId];
+    if (targetSocket) {
+      io.to(targetSocket).emit('camera-toggle', { cameraOff });
+    }
+  });
+
   socket.on('disconnect', async () => {
     const userId = Object.keys(onlineUsers).find(k => onlineUsers[k] === socket.id);
     if (userId) {
