@@ -114,10 +114,10 @@ socket.on('private-message', async (data) => {
       io.to(socket.id).emit('message-delivered', { messageId: message._id });
     }
 
-    // Always send FCM notification regardless of online status
+    // Send FCM notification (respects messageNotifications setting)
     try {
       const receiver = await User.findById(receiverId);
-      if (receiver && receiver.fcmToken) {
+      if (receiver && receiver.fcmToken && receiver.messageNotifications !== false) {
         const preview = content.startsWith('📷[image]') ? '📷 Photo' : content;
         await sendNotification(
           receiver.fcmToken,
@@ -141,6 +141,12 @@ socket.on('private-message', async (data) => {
     const { messageId, senderId } = data;
     if (!messageId || !senderId) return;
     await Message.findByIdAndUpdate(messageId, { read: true, readAt: Date.now() });
+    // Only forward read receipt if the reader has read receipts enabled
+    const readerId = Object.keys(onlineUsers).find(k => onlineUsers[k] === socket.id);
+    if (readerId) {
+      const reader = await User.findById(readerId).select('readReceipts');
+      if (reader && reader.readReceipts === false) return;
+    }
     const senderSocket = onlineUsers[senderId];
     if (senderSocket) {
       io.to(senderSocket).emit('message-read', { messageId });
@@ -285,7 +291,7 @@ socket.on('private-message', async (data) => {
     const { callerId, callerName, callerAvatar, targetUserId, offer, callType } = data;
     const targetSocket = onlineUsers[targetUserId];
 
-    // If receiver is online, send via socket as before
+    // If receiver is online, deliver via socket immediately
     if (targetSocket) {
       io.to(targetSocket).emit('incoming-call', {
         callerId,
@@ -294,13 +300,15 @@ socket.on('private-message', async (data) => {
         offer: typeof offer === 'string' ? offer : JSON.stringify(offer),
         callType: callType || 'voice',
       });
-      socket.emit('call-ringing', {});
     }
 
-    // Always send FCM notification (works for background/closed app)
+    // Always tell the caller that the ring was sent (even if receiver is offline — FCM covers it)
+    socket.emit('call-ringing', {});
+
+    // Send FCM for background/killed receiver (respects callNotifications setting)
     try {
       const receiver = await User.findById(targetUserId);
-      if (receiver && receiver.fcmToken) {
+      if (receiver && receiver.fcmToken && receiver.callNotifications !== false) {
         const { getMessaging } = require('firebase-admin/messaging');
         await getMessaging().send({
           token: receiver.fcmToken,
@@ -381,11 +389,55 @@ socket.on('private-message', async (data) => {
   });
 
   // Call end
-  socket.on('call-end', (data) => {
+  socket.on('call-end', async (data) => {
     const { targetUserId } = data;
     const targetSocket = onlineUsers[targetUserId];
     if (targetSocket) {
       io.to(targetSocket).emit('call-ended');
+    }
+
+    // If the call log is still 'missed' (never answered), notify receiver
+    try {
+      const key = Object.keys(global.pendingCallLogs || {}).find(k => k.endsWith(`-${targetUserId}`));
+      if (key && global.pendingCallLogs[key]) {
+        const log = await CallLog.findById(global.pendingCallLogs[key]);
+        if (log && log.status === 'missed') {
+          const receiver = await User.findById(targetUserId);
+          const caller = await User.findById(log.callerId);
+          const callerName = caller ? caller.name : 'Someone';
+
+          // Socket event for online receivers — instant in-app notification
+          if (targetSocket) {
+            io.to(targetSocket).emit('missed-call', {
+              callerId: String(log.callerId),
+              callerName,
+              callType: log.callType,
+            });
+          }
+
+          // FCM for background/killed receivers (respects callNotifications)
+          if (receiver && receiver.fcmToken && receiver.callNotifications !== false) {
+            const { getMessaging } = require('firebase-admin/messaging');
+            await getMessaging().send({
+              token: receiver.fcmToken,
+              notification: {
+                title: '📵 Missed call',
+                body: `You missed a ${log.callType} call from ${callerName}`,
+              },
+              data: {
+                type: 'missed_call',
+                callerId: String(log.callerId),
+                callerName: String(callerName),
+                callType: String(log.callType),
+              },
+              android: { priority: 'high' },
+            });
+          }
+        }
+        delete global.pendingCallLogs[key];
+      }
+    } catch (e) {
+      console.log('Missed call notification error:', e.message);
     }
   });
 

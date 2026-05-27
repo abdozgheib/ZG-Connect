@@ -16,7 +16,19 @@ const userSchema = new mongoose.Schema({
   lastSeen: { type: Date, default: Date.now },
   isVerified: { type: Boolean, default: false },
   verificationCode: { type: String, default: null },
-  verificationExpiry: { type: Date, default: null }
+  verificationExpiry: { type: Date, default: null },
+  // Privacy settings
+  lastSeenVisibility: { type: String, enum: ['everyone', 'contacts', 'nobody'], default: 'everyone' },
+  onlineStatusVisibility: { type: String, enum: ['everyone', 'contacts', 'nobody'], default: 'everyone' },
+  readReceipts: { type: Boolean, default: true },
+  profilePhotoVisibility: { type: String, enum: ['everyone', 'contacts', 'nobody'], default: 'everyone' },
+  aboutVisibility: { type: String, enum: ['everyone', 'contacts', 'nobody'], default: 'everyone' },
+  // Notification preferences
+  messageNotifications: { type: Boolean, default: true },
+  callNotifications: { type: Boolean, default: true },
+  // Chat settings
+  disappearingMessages: { type: String, default: 'off' },
+  mediaAutoDownload: { type: String, default: 'wifi' }
 }, { timestamps: true, strict: false });
 
 module.exports = mongoose.model('User', userSchema);

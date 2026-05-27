@@ -459,5 +459,20 @@ module.exports = (io, onlineUsers) => {
     }
   });
 
+  // Storage stats for the current user
+  router.get('/stats', auth, async (req, res) => {
+    try {
+      const myId = new mongoose.Types.ObjectId(req.user.id);
+      const messages = await Message.countDocuments({
+        $or: [{ sender: myId }, { receiver: myId }]
+      });
+      const me = await User.findById(req.user.id).select('contacts');
+      const groups = await Group.countDocuments({ 'members.userId': myId });
+      res.json({ messages, contacts: me.contacts.length, groups });
+    } catch (err) {
+      res.status(500).json({ message: 'Something went wrong!' });
+    }
+  });
+
   return router;
 };

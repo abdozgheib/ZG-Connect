@@ -85,11 +85,65 @@ router.get('/me', auth, async (req, res) => {
   }
 });
 
-// Get contact profile
+// Get contact profile — applies privacy settings
 router.get('/contact/:userId', auth, async (req, res) => {
   try {
+    const viewer = await User.findById(req.user.id).select('contacts');
     const user = await User.findById(req.params.userId).select('-password');
     if (!user) return res.status(404).json({ message: 'User not found!' });
+
+    const isContact = viewer.contacts.some(c => c.toString() === req.params.userId);
+    const result = user.toObject();
+
+    // Apply lastSeen privacy
+    const lsv = user.lastSeenVisibility || 'everyone';
+    if (lsv === 'nobody' || (lsv === 'contacts' && !isContact)) {
+      delete result.lastSeen;
+      result.lastSeen = null;
+    }
+    // Apply online status privacy
+    const osv = user.onlineStatusVisibility || 'everyone';
+    if (osv === 'nobody' || (osv === 'contacts' && !isContact)) {
+      result.online = false;
+    }
+    // Apply profile photo privacy
+    const ppv = user.profilePhotoVisibility || 'everyone';
+    if (ppv === 'nobody' || (ppv === 'contacts' && !isContact)) {
+      result.avatar = '';
+    }
+    // Apply about privacy
+    const av = user.aboutVisibility || 'everyone';
+    if (av === 'nobody' || (av === 'contacts' && !isContact)) {
+      result.about = '';
+    }
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ message: 'Something went wrong!' });
+  }
+});
+
+// Get privacy settings
+router.get('/privacy', auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select(
+      'lastSeenVisibility onlineStatusVisibility readReceipts profilePhotoVisibility aboutVisibility messageNotifications callNotifications disappearingMessages mediaAutoDownload'
+    );
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ message: 'Something went wrong!' });
+  }
+});
+
+// Update privacy settings
+router.put('/privacy', auth, async (req, res) => {
+  try {
+    const allowed = ['lastSeenVisibility', 'onlineStatusVisibility', 'readReceipts', 'profilePhotoVisibility', 'aboutVisibility', 'messageNotifications', 'callNotifications', 'disappearingMessages', 'mediaAutoDownload'];
+    const update = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) update[key] = req.body[key];
+    }
+    const user = await User.findByIdAndUpdate(req.user.id, { $set: update }, { new: true }).select(allowed.join(' '));
     res.json(user);
   } catch (err) {
     res.status(500).json({ message: 'Something went wrong!' });
