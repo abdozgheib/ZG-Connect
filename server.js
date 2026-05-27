@@ -411,7 +411,7 @@ socket.on('private-message', async (data) => {
 });
 
 setInterval(() => {
-  fetch('https://zg-connect.onrender.com/api/health').catch(() => {});
+  fetch('https://zg-connect-production.up.railway.app/api/health').catch(() => {});
 }, 10 * 60 * 1000);
 
 const PORT = process.env.PORT || 3000;
