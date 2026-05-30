@@ -53,6 +53,7 @@ io.on('connection', (socket) => {
   socket.on('user-online', async (userId) => {
     if (!userId || userId === 'null' || userId === 'undefined') return;
     onlineUsers[userId] = socket.id;
+    socket.join(String(userId));
     await User.findByIdAndUpdate(userId, { online: true });
     io.emit('online-users', Object.keys(onlineUsers));
   });
@@ -288,12 +289,13 @@ socket.on('private-message', async (data) => {
 
   // Call offer - caller sends to receiver
   socket.on('call-offer', async (data) => {
-    const { callerId, callerName, callerAvatar, targetUserId, offer, callType } = data;
+    const { callerId, callerName, callerAvatar, targetUserId, offer, callType, callId } = data;
     const targetSocket = onlineUsers[targetUserId];
 
     // If receiver is online, deliver via socket immediately
     if (targetSocket) {
       io.to(targetSocket).emit('incoming-call', {
+        callId,
         callerId,
         callerName,
         callerAvatar,
@@ -318,6 +320,7 @@ socket.on('private-message', async (data) => {
           },
           data: {
             type: 'incoming_call',
+            callId: String(callId || ''),
             callerId: String(callerId),
             callerName: String(callerName),
             callerAvatar: String(callerAvatar || ''),
@@ -348,6 +351,60 @@ socket.on('private-message', async (data) => {
   });
 
   // Receiver accepted — relay to caller so they join Stream
+  function relayCallCancel(eventName, data) {
+    console.log('server_call_cancel_received', {
+      eventName,
+      callId: data && data.callId ? data.callId : null,
+      callerId: data && data.callerId ? data.callerId : null,
+      targetUserId: data && data.targetUserId ? data.targetUserId : null,
+      receiverId: data && data.receiverId ? data.receiverId : null,
+      to: data && data.to ? data.to : null,
+      socketId: socket.id,
+    });
+
+    const targetUserId = data && (data.targetUserId || data.receiverId || data.to);
+    const targetSocket = targetUserId ? onlineUsers[targetUserId] : null;
+
+    console.log('server_call_cancel_target_user', {
+      eventName,
+      callId: data && data.callId ? data.callId : null,
+      targetUserId: targetUserId || null,
+      targetSocket: targetSocket || null,
+    });
+
+    if (!targetUserId) return;
+
+    const payload = {
+      ...data,
+      callId: data && data.callId ? data.callId : '',
+      callerId: data && data.callerId ? data.callerId : '',
+      targetUserId,
+      reason: data && data.reason ? data.reason : 'caller_cancel_before_answer',
+    };
+
+    if (targetSocket) {
+      io.to(targetSocket).emit('call-cancel', payload);
+      io.to(targetSocket).emit('call-end-before-answer', payload);
+    }
+    io.to(String(targetUserId)).emit('call-cancel', payload);
+    io.to(String(targetUserId)).emit('call-end-before-answer', payload);
+
+    console.log('server_call_cancel_emit_success', {
+      eventName,
+      callId: payload.callId || null,
+      targetUserId,
+      targetSocket: targetSocket || null,
+    });
+  }
+
+  socket.on('call-cancel', (data) => {
+    relayCallCancel('call-cancel', data);
+  });
+
+  socket.on('call-end-before-answer', (data) => {
+    relayCallCancel('call-end-before-answer', data);
+  });
+
   socket.on('call-answered-stream', (data) => {
     const { callerId } = data;
     const callerSocket = onlineUsers[callerId];
