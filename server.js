@@ -351,7 +351,7 @@ socket.on('private-message', async (data) => {
   });
 
   // Receiver accepted — relay to caller so they join Stream
-  function relayCallCancel(eventName, data) {
+  async function relayCallCancel(eventName, data) {
     console.log('server_call_cancel_received', {
       eventName,
       callId: data && data.callId ? data.callId : null,
@@ -395,6 +395,39 @@ socket.on('private-message', async (data) => {
       targetUserId,
       targetSocket: targetSocket || null,
     });
+
+    try {
+      const receiver = await User.findById(targetUserId);
+      if (receiver && receiver.fcmToken && receiver.callNotifications !== false) {
+        const { getMessaging } = require('firebase-admin/messaging');
+        await getMessaging().send({
+          token: receiver.fcmToken,
+          android: {
+            priority: 'high',
+            ttl: 30000,
+          },
+          data: {
+            type: 'call_cancel',
+            callId: String(payload.callId || ''),
+            callerId: String(payload.callerId || ''),
+            reason: String(payload.reason || 'caller_cancel_before_answer'),
+          },
+        });
+        console.log('backend_call_cancel_fcm_sent', {
+          eventName,
+          callId: payload.callId || null,
+          callerId: payload.callerId || null,
+          targetUserId,
+        });
+      }
+    } catch (e) {
+      console.log('backend_call_cancel_fcm_error', {
+        eventName,
+        callId: payload.callId || null,
+        targetUserId,
+        error: e.message,
+      });
+    }
   }
 
   socket.on('call-cancel', (data) => {
