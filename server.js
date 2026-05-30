@@ -291,17 +291,59 @@ socket.on('private-message', async (data) => {
   socket.on('call-offer', async (data) => {
     const { callerId, callerName, callerAvatar, targetUserId, offer, callType, callId } = data;
     const targetSocket = onlineUsers[targetUserId];
+    const clientCallerAvatar = typeof callerAvatar === 'string' ? callerAvatar.trim() : '';
+    let resolvedCallerName = callerName;
+    let resolvedCallerAvatar = clientCallerAvatar;
+    console.log('backend_call_offer_received_avatar', {
+      callId,
+      callerId,
+      targetUserId,
+      hasMobileCallerAvatar: !!clientCallerAvatar,
+      mobileCallerAvatarLength: clientCallerAvatar.length,
+    });
+    try {
+      const caller = callerId ? await User.findById(callerId).select('name avatar profileImage profilePhoto image photo') : null;
+      if (caller) {
+        resolvedCallerName = resolvedCallerName || caller.name;
+        const dbAvatar = String(
+          caller.avatar ||
+          caller.profileImage ||
+          caller.profilePhoto ||
+          caller.image ||
+          caller.photo ||
+          ''
+        ).trim();
+        resolvedCallerAvatar = resolvedCallerAvatar || dbAvatar;
+      }
+      console.log('backend_call_offer_avatar_resolved', {
+        callId,
+        callerId,
+        source: clientCallerAvatar ? 'mobile_payload' : 'mongodb_user',
+        hasResolvedAvatar: !!resolvedCallerAvatar,
+        resolvedAvatarLength: String(resolvedCallerAvatar || '').length,
+      });
+    } catch (e) {
+      console.log('native_incoming_avatar_backend_resolve_failed', e.message);
+    }
 
     // If receiver is online, deliver via socket immediately
     if (targetSocket) {
-      io.to(targetSocket).emit('incoming-call', {
+      const socketPayload = {
         callId,
         callerId,
-        callerName,
-        callerAvatar,
+        callerName: resolvedCallerName,
+        callerAvatar: resolvedCallerAvatar || '',
         offer: typeof offer === 'string' ? offer : JSON.stringify(offer),
         callType: callType || 'voice',
+      };
+      console.log('backend_incoming_call_socket_avatar_sent', {
+        callId,
+        callerId,
+        targetUserId,
+        hasCallerAvatar: !!socketPayload.callerAvatar,
+        callerAvatarLength: String(socketPayload.callerAvatar || '').length,
       });
+      io.to(targetSocket).emit('incoming-call', socketPayload);
     }
 
     // Always tell the caller that the ring was sent (even if receiver is offline — FCM covers it)
@@ -312,21 +354,29 @@ socket.on('private-message', async (data) => {
       const receiver = await User.findById(targetUserId);
       if (receiver && receiver.fcmToken && receiver.callNotifications !== false) {
         const { getMessaging } = require('firebase-admin/messaging');
+        const fcmData = {
+          type: 'incoming_call',
+          callId: String(callId || ''),
+          callerId: String(callerId),
+          callerName: String(resolvedCallerName || 'Unknown'),
+          callerAvatar: String(resolvedCallerAvatar || ''),
+          offer: typeof offer === 'string' ? offer : JSON.stringify(offer),
+          callType: String(callType || 'voice'),
+        };
+        console.log('backend_incoming_call_fcm_avatar_sent', {
+          callId,
+          callerId,
+          targetUserId,
+          hasCallerAvatar: !!fcmData.callerAvatar,
+          callerAvatarLength: fcmData.callerAvatar.length,
+        });
         await getMessaging().send({
           token: receiver.fcmToken,
           android: {
             priority: 'high',
             ttl: 30000,
           },
-          data: {
-            type: 'incoming_call',
-            callId: String(callId || ''),
-            callerId: String(callerId),
-            callerName: String(callerName),
-            callerAvatar: String(callerAvatar || ''),
-            offer: typeof offer === 'string' ? offer : JSON.stringify(offer),
-            callType: String(callType || 'voice'),
-          },
+          data: fcmData,
         });
         console.log('Call FCM sent to:', receiver.name);
       }
