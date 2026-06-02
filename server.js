@@ -119,18 +119,22 @@ socket.on('private-message', async (data) => {
     try {
       const receiver = await User.findById(receiverId);
       if (receiver && receiver.fcmToken && receiver.messageNotifications !== false) {
-        const preview = content.startsWith('📷[image]') ? '📷 Photo' : content;
-        await sendNotification(
-          receiver.fcmToken,
-          `💬 ${senderName}`,
-          preview,
-          {
-            type: 'private_message',
-            senderId: senderId.toString(),
-            senderName,
-            receiverId: receiverId.toString()
-          }
-        );
+        const preview = content.startsWith('📷[image]') ? '📷 Photo'
+          : content.startsWith('🎤[audio]') || content.includes('[audio]') ? '🎤 Voice message'
+          : content;
+        const fcmData = {
+          type: 'private_message',
+          senderId: senderId.toString(),
+          senderName,
+          receiverId: receiverId.toString(),
+          messageId: message._id.toString(),
+          chatId: senderId.toString(),
+          content,
+          createdAt: message.createdAt.toISOString(),
+        };
+        console.log('backend_private_message_fcm_payload', JSON.stringify(fcmData));
+        const fcmResult = await sendNotification(receiver.fcmToken, `💬 ${senderName}`, preview, fcmData);
+        console.log('backend_private_message_fcm_sent', JSON.stringify({ messageId: message._id.toString(), receiverId: receiverId.toString(), ok: !!fcmResult }));
       }
     } catch (err) {
       console.log('FCM error:', err);

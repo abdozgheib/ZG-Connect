@@ -14,29 +14,23 @@ function getFirebaseApp() {
   return firebaseApp;
 }
 
-// Send notification to a single device
+// Send notification to a single device.
+// Data-only (no top-level notification field) so Android setBackgroundMessageHandler
+// fires when app is killed. The mobile JS handler schedules the local notification.
 async function sendNotification(fcmToken, title, body, data = {}) {
   try {
     getFirebaseApp();
     const message = {
-      notification: {
-        title,
-        body,
-      },
       data: {
         ...data,
-        click_action: 'FLUTTER_NOTIFICATION_CLICK'
+        notif_title: title,
+        notif_body: body,
+        click_action: 'FLUTTER_NOTIFICATION_CLICK',
       },
       android: {
         priority: 'high',
-        notification: {
-          sound: 'default',
-          channelId: 'default',
-          priority: 'high',
-          defaultVibrateTimings: true,
-        }
       },
-      token: fcmToken
+      token: fcmToken,
     };
 
     const response = await admin.messaging().send(message);
