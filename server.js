@@ -122,18 +122,28 @@ socket.on('private-message', async (data) => {
         const preview = content.startsWith('📷[image]') ? '📷 Photo'
           : content.startsWith('🎤[audio]') || content.includes('[audio]') ? '🎤 Voice message'
           : content;
+        // Data-only so native onMessageReceived fires in all app states.
+        // Native IncomingCallFirebaseMessagingService shows the notification,
+        // queues the message, and queues the delivery receipt.
         const fcmData = {
           type: 'private_message',
           senderId: senderId.toString(),
-          senderName,
+          senderName: String(senderName || ''),
           receiverId: receiverId.toString(),
           messageId: message._id.toString(),
           chatId: senderId.toString(),
-          content,
+          content: String(content || ''),
           createdAt: message.createdAt.toISOString(),
+          notif_title: `💬 ${senderName}`,
+          notif_body: preview,
         };
         console.log('backend_private_message_fcm_payload', JSON.stringify(fcmData));
-        const fcmResult = await sendNotification(receiver.fcmToken, `💬 ${senderName}`, preview, fcmData);
+        const { getMessaging } = require('firebase-admin/messaging');
+        const fcmResult = await getMessaging().send({
+          token: receiver.fcmToken,
+          android: { priority: 'high', ttl: 60000 },
+          data: fcmData,
+        });
         console.log('backend_private_message_fcm_sent', JSON.stringify({ messageId: message._id.toString(), receiverId: receiverId.toString(), ok: !!fcmResult }));
       }
     } catch (err) {
