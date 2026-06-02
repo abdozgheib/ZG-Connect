@@ -151,6 +151,37 @@ socket.on('private-message', async (data) => {
     }
   });
 
+  socket.on('message-delivered', async (data) => {
+    const { messageId, senderId } = data || {};
+    console.log('server_message_delivered_received', JSON.stringify({
+      messageId: messageId ? String(messageId) : null,
+      senderId: senderId ? String(senderId) : null,
+      receiverSocketId: socket.id
+    }));
+    if (!messageId || !senderId) return;
+    try {
+      await Message.findByIdAndUpdate(messageId, { delivered: true, deliveredAt: Date.now() });
+      const senderSocket = onlineUsers[senderId];
+      if (senderSocket) {
+        io.to(senderSocket).emit('message-delivered', { messageId });
+        console.log('server_message_delivered_relayed', JSON.stringify({
+          messageId: String(messageId),
+          senderId: String(senderId),
+          senderSocket
+        }));
+      } else {
+        console.log('server_message_delivered_relayed', JSON.stringify({
+          messageId: String(messageId),
+          senderId: String(senderId),
+          senderSocket: null,
+          skipped: 'sender_offline'
+        }));
+      }
+    } catch (err) {
+      console.log('server_message_delivered_error', err);
+    }
+  });
+
   // Message read
   socket.on('message-read', async (data) => {
     const { messageId, senderId } = data;
