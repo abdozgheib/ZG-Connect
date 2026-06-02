@@ -125,6 +125,16 @@ socket.on('private-message', async (data) => {
         // Data-only so native onMessageReceived fires in all app states.
         // Native IncomingCallFirebaseMessagingService shows the notification,
         // queues the message, and queues the delivery receipt.
+        const rawContent = String(content || '');
+        let fcmPreview = rawContent.includes('[video]') ? 'Video'
+          : rawContent.includes('[image]') ? 'Photo'
+          : rawContent.includes('[audio]') ? 'Voice message'
+          : rawContent.replace(/\s+/g, ' ').trim();
+        let contentTruncated = false;
+        if (fcmPreview.length > 160) {
+          fcmPreview = fcmPreview.slice(0, 160) + '...';
+          contentTruncated = true;
+        }
         const fcmData = {
           type: 'private_message',
           senderId: senderId.toString(),
@@ -132,11 +142,22 @@ socket.on('private-message', async (data) => {
           receiverId: receiverId.toString(),
           messageId: message._id.toString(),
           chatId: senderId.toString(),
-          content: String(content || ''),
+          contentPreview: fcmPreview,
+          contentIsPreview: 'true',
           createdAt: message.createdAt.toISOString(),
           notif_title: `💬 ${senderName}`,
-          notif_body: preview,
+          notif_body: fcmPreview,
         };
+        console.log('backend_private_message_fcm_content_truncated', JSON.stringify({
+          messageId: message._id.toString(),
+          originalLength: rawContent.length,
+          previewLength: fcmPreview.length,
+          truncated: contentTruncated
+        }));
+        console.log('backend_private_message_fcm_payload_size', JSON.stringify({
+          messageId: message._id.toString(),
+          bytes: Buffer.byteLength(JSON.stringify(fcmData), 'utf8')
+        }));
         console.log('backend_private_message_fcm_payload', JSON.stringify(fcmData));
         const { getMessaging } = require('firebase-admin/messaging');
         const fcmResult = await getMessaging().send({
