@@ -7,6 +7,15 @@ const FormData = require('form-data');
 
 let socketIo = null;
 
+function tokenDebugParts(value) {
+  const token = String(value || '');
+  return {
+    tokenLength: token.length,
+    tokenPrefix: token.slice(0, 20),
+    tokenSuffix: token.slice(-20),
+  };
+}
+
 function broadcastAvatarUpdate(user, avatarUrl) {
   if (!socketIo || !user) return;
   const userId = String(user._id || '');
@@ -201,6 +210,10 @@ router.post('/fcm-token', auth, async (req, res) => {
   try {
     const { fcmToken } = req.body;
     console.log('📱 Saving FCM token for user:', req.user.id, 'token:', fcmToken?.substring(0, 20));
+    console.log('backend_fcm_token_save_received', JSON.stringify({
+      userId: String(req.user.id),
+      ...tokenDebugParts(fcmToken),
+    }));
     await User.findByIdAndUpdate(req.user.id, { fcmToken });
     console.log('✅ FCM token saved!');
     res.json({ message: 'FCM token saved!' });

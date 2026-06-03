@@ -16,6 +16,15 @@ const io = new Server(server);
 // Track online users — declared here so routes can reference it at registration time
 const onlineUsers = {};
 
+function tokenDebugParts(value) {
+  const token = String(value || '');
+  return {
+    tokenLength: token.length,
+    tokenPrefix: token.slice(0, 20),
+    tokenSuffix: token.slice(-20),
+  };
+}
+
 app.use(express.json());
 // Serve static files; `extensions: ['html']` lets /home serve home.html, etc.
 app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
@@ -212,6 +221,11 @@ socket.on('private-message', async (data) => {
           bytes: Buffer.byteLength(JSON.stringify(fcmData), 'utf8')
         }));
         console.log('backend_private_message_fcm_payload', JSON.stringify(fcmData));
+        console.log('backend_private_message_fcm_token_used', JSON.stringify({
+          receiverId: receiverId.toString(),
+          messageId: message._id.toString(),
+          ...tokenDebugParts(receiver.fcmToken),
+        }));
         const { getMessaging } = require('firebase-admin/messaging');
         const fcmResult = await getMessaging().send({
           token: receiver.fcmToken,
@@ -512,6 +526,12 @@ socket.on('private-message', async (data) => {
           targetUserId,
           hasCallerAvatar: !!fcmData.callerAvatar,
           callerAvatarLength: fcmData.callerAvatar.length,
+        });
+        console.log('backend_incoming_call_fcm_token_used', {
+          callId,
+          callerId,
+          targetUserId,
+          ...tokenDebugParts(receiver.fcmToken),
         });
         await getMessaging().send({
           token: receiver.fcmToken,
