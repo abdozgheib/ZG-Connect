@@ -25,7 +25,7 @@ app.get('/api/health', (req, res) => res.json({ ok: true }));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/chat', require('./routes/chat')(io, onlineUsers));
 app.use('/api/contacts', require('./routes/contacts')(io, onlineUsers));
-app.use('/api/profile', require('./routes/profile'));
+app.use('/api/profile', require('./routes/profile')(io, onlineUsers));
 app.use('/api/calls', require('./routes/calls'));
 
 app.post('/api/calls/decline', async (req, res) => {
@@ -56,6 +56,58 @@ io.on('connection', (socket) => {
     socket.join(String(userId));
     await User.findByIdAndUpdate(userId, { online: true });
     io.emit('online-users', Object.keys(onlineUsers));
+  });
+
+  async function relayAvatarUpdateFromSocket(data, source) {
+    const userId = String(data?.userId || data?._id || '').trim();
+    const avatarUrl = String(data?.avatarUrl || data?.avatar || '').trim();
+    const avatarUpdatedAt = Number(data?.avatarUpdatedAt || Date.now());
+    console.log('backend_avatar_update_received', JSON.stringify({
+      source,
+      userId: userId || null,
+      hasAvatar: !!avatarUrl,
+      avatarUpdatedAt,
+      socketId: socket.id,
+    }));
+    if (!userId || !avatarUrl) return;
+    try {
+      const user = await User.findById(userId).select('name contacts');
+      const contactRooms = Array.isArray(user?.contacts) ? user.contacts.map(contactId => String(contactId)) : [];
+      const rooms = [userId, ...contactRooms];
+      const payload = {
+        userId,
+        avatar: avatarUrl,
+        avatarUrl,
+        avatarUpdatedAt,
+        name: user?.name || data?.name || '',
+      };
+      rooms.forEach(room => {
+        io.to(room).emit('avatar-updated', payload);
+        io.to(room).emit('user-profile-updated', payload);
+      });
+      console.log('backend_avatar_update_broadcasted', JSON.stringify({
+        source,
+        userId,
+        rooms,
+        contacts: contactRooms.length,
+        hasAvatar: true,
+        avatarUpdatedAt,
+      }));
+    } catch (err) {
+      console.log('backend_avatar_update_error', JSON.stringify({
+        source,
+        userId,
+        error: err?.message || String(err),
+      }));
+    }
+  }
+
+  socket.on('avatar-updated', data => {
+    relayAvatarUpdateFromSocket(data, 'socket_avatar_updated');
+  });
+
+  socket.on('user-profile-updated', data => {
+    relayAvatarUpdateFromSocket(data, 'socket_user_profile_updated');
   });
 
 socket.on('private-message', async (data) => {
@@ -205,18 +257,42 @@ socket.on('private-message', async (data) => {
 
   // Message read
   socket.on('message-read', async (data) => {
-    const { messageId, senderId } = data;
+    const { messageId, senderId } = data || {};
+    console.log('server_message_read_received', JSON.stringify({
+      messageId: messageId ? String(messageId) : null,
+      senderId: senderId ? String(senderId) : null,
+      readerSocketId: socket.id
+    }));
     if (!messageId || !senderId) return;
     await Message.findByIdAndUpdate(messageId, { read: true, readAt: Date.now() });
     // Only forward read receipt if the reader has read receipts enabled
     const readerId = Object.keys(onlineUsers).find(k => onlineUsers[k] === socket.id);
     if (readerId) {
       const reader = await User.findById(readerId).select('readReceipts');
-      if (reader && reader.readReceipts === false) return;
+      if (reader && reader.readReceipts === false) {
+        console.log('server_message_read_relayed', JSON.stringify({
+          messageId: String(messageId),
+          senderId: String(senderId),
+          skipped: 'reader_read_receipts_disabled'
+        }));
+        return;
+      }
     }
     const senderSocket = onlineUsers[senderId];
     if (senderSocket) {
       io.to(senderSocket).emit('message-read', { messageId });
+      console.log('server_message_read_relayed', JSON.stringify({
+        messageId: String(messageId),
+        senderId: String(senderId),
+        senderSocket
+      }));
+    } else {
+      console.log('server_message_read_relayed', JSON.stringify({
+        messageId: String(messageId),
+        senderId: String(senderId),
+        senderSocket: null,
+        skipped: 'sender_offline'
+      }));
     }
   });
 

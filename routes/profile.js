@@ -5,6 +5,41 @@ const User = require('../models/User');
 const axios = require('axios');
 const FormData = require('form-data');
 
+let socketIo = null;
+
+function broadcastAvatarUpdate(user, avatarUrl) {
+  if (!socketIo || !user) return;
+  const userId = String(user._id || '');
+  const avatarUpdatedAt = Date.now();
+  const contactRooms = Array.isArray(user.contacts) ? user.contacts.map(contactId => String(contactId)) : [];
+  const payload = {
+    userId,
+    avatar: avatarUrl || '',
+    avatarUrl: avatarUrl || '',
+    avatarUpdatedAt,
+    name: user.name || '',
+  };
+  console.log('backend_avatar_update_broadcasted', JSON.stringify({
+    userId,
+    rooms: [userId, ...contactRooms],
+    contacts: contactRooms.length,
+    hasAvatar: !!avatarUrl,
+    avatarUpdatedAt,
+  }));
+  console.log('profile_avatar_socket_emit', JSON.stringify({
+    userId,
+    contacts: contactRooms.length,
+    hasAvatar: !!avatarUrl,
+    avatarUpdatedAt,
+  }));
+  socketIo.to(userId).emit('avatar-updated', payload);
+  socketIo.to(userId).emit('user-profile-updated', payload);
+  contactRooms.forEach(room => {
+    socketIo.to(room).emit('avatar-updated', payload);
+    socketIo.to(room).emit('user-profile-updated', payload);
+  });
+}
+
 // Upload profile photo
 router.post('/avatar', auth, async (req, res) => {
   try {
@@ -37,6 +72,12 @@ router.post('/avatar', auth, async (req, res) => {
 
     console.log('✅ Avatar saved to MongoDB:', updatedUser.avatar);
 
+    console.log('backend_avatar_update_received', JSON.stringify({
+      userId: String(req.user.id),
+      hasAvatar: !!imageUrl,
+      route: 'avatar',
+    }));
+    broadcastAvatarUpdate(updatedUser, imageUrl);
     res.json({ avatar: imageUrl, message: 'Profile photo updated!' });
 
   } catch (err) {
@@ -49,7 +90,13 @@ router.post('/avatar', auth, async (req, res) => {
 router.post('/avatar-url', auth, async (req, res) => {
   try {
     const { avatarUrl } = req.body;
-    await User.findByIdAndUpdate(req.user.id, { avatar: avatarUrl });
+    const updatedUser = await User.findByIdAndUpdate(req.user.id, { avatar: avatarUrl }, { new: true });
+    console.log('backend_avatar_update_received', JSON.stringify({
+      userId: String(req.user.id),
+      hasAvatar: !!avatarUrl,
+      route: 'avatar-url',
+    }));
+    broadcastAvatarUpdate(updatedUser, avatarUrl);
     res.json({ success: true, avatar: avatarUrl });
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
@@ -163,4 +210,7 @@ router.post('/fcm-token', auth, async (req, res) => {
   }
 });
 
-module.exports = router;
+module.exports = (io) => {
+  socketIo = io;
+  return router;
+};
