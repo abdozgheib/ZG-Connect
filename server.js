@@ -194,6 +194,7 @@ socket.on('private-message', async (data) => {
           receiverId: receiverId.toString(),
           messageId: message._id.toString(),
           chatId: senderId.toString(),
+          content: fcmPreview,
           contentPreview: fcmPreview,
           contentIsPreview: 'true',
           createdAt: message.createdAt.toISOString(),
