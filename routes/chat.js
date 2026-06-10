@@ -13,6 +13,38 @@ function getMyRole(group, userId) {
 module.exports = (io, onlineUsers) => {
   const router = express.Router();
 
+  const populatedGroupQuery = (groupId) => Group.findById(groupId).populate('members.userId', 'name avatar');
+
+  const getGroupMemberIds = (group) => {
+    if (!group || !Array.isArray(group.members)) return [];
+    return group.members
+      .map((member) => member?.userId?._id || member?.userId)
+      .filter(Boolean)
+      .map((id) => id.toString());
+  };
+
+  const emitToUserRooms = (userIds, eventName, payload) => {
+    const uniqueIds = [...new Set((userIds || []).filter(Boolean).map((id) => id.toString()))];
+    uniqueIds.forEach((userId) => {
+      const socketId = onlineUsers[userId];
+      const target = socketId ? io.to(userId).to(socketId) : io.to(userId);
+      target.emit(eventName, payload);
+    });
+  };
+
+  const emitGroupAdded = (group, userIds, includeCreatedEvent = false) => {
+    const payload = { groupId: group._id.toString(), group };
+    emitToUserRooms(userIds, 'group-added', payload);
+    if (includeCreatedEvent) emitToUserRooms(userIds, 'group-created', payload);
+  };
+
+  const emitGroupUpdated = (group, userIds) => {
+    const payload = { groupId: group._id.toString(), group };
+    emitToUserRooms(userIds, 'group-updated', payload);
+    io.to(group._id.toString()).emit('group-updated', payload);
+  };
+
+
   // Get last message preview for all contacts in ONE query
   router.get('/previews', auth, async (req, res) => {
     try {
@@ -109,20 +141,8 @@ module.exports = (io, onlineUsers) => {
       await group.save();
       console.log('Group created:', group._id);
 
-      const populated = await Group.findById(group._id).populate('members.userId', 'name avatar');
-
-      // Notify online members
-      const allMemberIds = [req.user.id, ...memberIds];
-      for (const memberId of allMemberIds) {
-        const socketId = onlineUsers[memberId.toString()];
-        if (socketId) {
-          io.to(socketId).emit('group-created', {
-            groupId: group._id,
-            name: group.name,
-            avatar: group.avatar,
-          });
-        }
-      }
+      const populated = await populatedGroupQuery(group._id);
+      emitGroupAdded(populated, getGroupMemberIds(populated), true);
 
       res.json(populated);
     } catch (err) {
@@ -141,7 +161,9 @@ module.exports = (io, onlineUsers) => {
         members: [{ userId: req.user.id, role: 'owner' }, ...memberDocs]
       });
       await group.save();
-      res.json(group);
+      const populated = await populatedGroupQuery(group._id);
+      emitGroupAdded(populated, getGroupMemberIds(populated), true);
+      res.json(populated);
     } catch (err) {
       res.status(500).json({ message: 'Something went wrong!' });
     }
@@ -270,12 +292,17 @@ module.exports = (io, onlineUsers) => {
       if (group.members.some(m => m.userId.toString() === userId)) {
         return res.status(400).json({ message: 'Already a member!' });
       }
+      const existingMemberIds = getGroupMemberIds(group);
       group.members.push({ userId, role: 'member' });
       await group.save();
-      const updated = await Group.findById(group._id).populate('members.userId', 'name avatar');
-      io.to(req.params.groupId).emit('group-updated', { groupId: req.params.groupId, group: updated });
-      const addedMemberTarget = onlineUsers[String(userId)] || String(userId);
-      io.to(addedMemberTarget).emit('group-added', { groupId: req.params.groupId, group: updated });
+      const updated = await populatedGroupQuery(group._id);
+      emitGroupAdded(updated, [userId]);
+      emitGroupUpdated(updated, existingMemberIds);
+      emitToUserRooms(existingMemberIds, 'group-member-added', {
+        groupId: group._id.toString(),
+        userId: userId.toString(),
+        group: updated
+      });
       res.json(updated);
     } catch (err) {
       res.status(500).json({ message: 'Something went wrong!' });
@@ -299,8 +326,14 @@ module.exports = (io, onlineUsers) => {
       }
       group.members = group.members.filter(m => m.userId.toString() !== userId);
       await group.save();
-      const updated = await Group.findById(group._id).populate('members.userId', 'name avatar');
-      io.to(req.params.groupId).emit('group-updated', { groupId: req.params.groupId, group: updated });
+      const updated = await populatedGroupQuery(group._id);
+      const remainingMemberIds = getGroupMemberIds(updated);
+      emitGroupUpdated(updated, remainingMemberIds);
+      emitToUserRooms([userId], 'group-member-removed', {
+        groupId: group._id.toString(),
+        userId: userId.toString(),
+        group: updated
+      });
       res.json(updated);
     } catch (err) {
       res.status(500).json({ message: 'Something went wrong!' });
@@ -323,8 +356,8 @@ module.exports = (io, onlineUsers) => {
       }
       member.role = 'admin';
       await group.save();
-      const updated = await Group.findById(group._id).populate('members.userId', 'name avatar');
-      io.to(req.params.groupId).emit('group-updated', { groupId: req.params.groupId, group: updated });
+      const updated = await populatedGroupQuery(group._id);
+      emitGroupUpdated(updated, getGroupMemberIds(updated));
       res.json(updated);
     } catch (err) {
       res.status(500).json({ message: 'Something went wrong!' });
@@ -347,8 +380,8 @@ module.exports = (io, onlineUsers) => {
       }
       member.role = 'member';
       await group.save();
-      const updated = await Group.findById(group._id).populate('members.userId', 'name avatar');
-      io.to(req.params.groupId).emit('group-updated', { groupId: req.params.groupId, group: updated });
+      const updated = await populatedGroupQuery(group._id);
+      emitGroupUpdated(updated, getGroupMemberIds(updated));
       res.json(updated);
     } catch (err) {
       res.status(500).json({ message: 'Something went wrong!' });
@@ -368,8 +401,8 @@ module.exports = (io, onlineUsers) => {
       if (name) group.name = name.trim();
       if (avatar !== undefined) group.avatar = avatar;
       await group.save();
-      const updated = await Group.findById(group._id).populate('members.userId', 'name avatar');
-      io.to(req.params.groupId).emit('group-updated', { groupId: req.params.groupId, group: updated });
+      const updated = await populatedGroupQuery(group._id);
+      emitGroupUpdated(updated, getGroupMemberIds(updated));
       res.json(updated);
     } catch (err) {
       res.status(500).json({ message: 'Something went wrong!' });
@@ -389,6 +422,11 @@ module.exports = (io, onlineUsers) => {
         if (others.length === 0) {
           await Group.findByIdAndDelete(req.params.groupId);
           await Message.deleteMany({ group: req.params.groupId });
+          emitToUserRooms([req.user.id], 'group-left', {
+            groupId: req.params.groupId,
+            userId: req.user.id,
+            deleted: true
+          });
           return res.json({ message: 'Group deleted!' });
         }
         // Transfer to oldest admin, fallback to first member
@@ -399,13 +437,20 @@ module.exports = (io, onlineUsers) => {
       const leavingUser = await User.findById(req.user.id).select('name');
       group.members = group.members.filter(m => m.userId.toString() !== req.user.id);
       await group.save();
-      const updated = await Group.findById(group._id).populate('members.userId', 'name avatar');
-      io.to(req.params.groupId).emit('group-member-left', {
+      const updated = await populatedGroupQuery(group._id);
+      const remainingMemberIds = getGroupMemberIds(updated);
+      emitToUserRooms(remainingMemberIds, 'group-member-left', {
         groupId: req.params.groupId,
         userId: req.user.id,
-        userName: leavingUser?.name || 'Someone'
+        userName: leavingUser?.name || 'Someone',
+        group: updated
       });
-      io.to(req.params.groupId).emit('group-updated', { groupId: req.params.groupId, group: updated });
+      emitGroupUpdated(updated, remainingMemberIds);
+      emitToUserRooms([req.user.id], 'group-left', {
+        groupId: req.params.groupId,
+        userId: req.user.id,
+        group: updated
+      });
       res.json({ message: 'Left group!' });
     } catch (err) {
       res.status(500).json({ message: 'Something went wrong!' });
@@ -420,7 +465,9 @@ module.exports = (io, onlineUsers) => {
       if (getMyRole(group, req.user.id) !== 'owner') {
         return res.status(403).json({ message: 'Only owner can delete the group!' });
       }
+      const memberIds = getGroupMemberIds(group);
       await Group.findByIdAndUpdate(req.params.groupId, { isDeleted: true });
+      emitToUserRooms(memberIds, 'group-updated', { groupId: req.params.groupId, deleted: true });
       io.to(req.params.groupId).emit('group-updated', { groupId: req.params.groupId, deleted: true });
       res.json({ message: 'Group deleted!' });
     } catch (err) {
