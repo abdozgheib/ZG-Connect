@@ -398,6 +398,30 @@ socket.on('private-message', async (data) => {
     }
   });
 
+  socket.on('message-deleted', (data) => {
+    const { messageId, senderId, receiverId } = data || {};
+    if (!messageId || messageId === 'null' || messageId === 'undefined') {
+      console.log('Invalid messageId in message-deleted:', messageId);
+      return;
+    }
+    if (!receiverId || receiverId === 'null' || receiverId === 'undefined') {
+      console.log('Invalid receiverId in message-deleted:', receiverId);
+      return;
+    }
+
+    const payload = {
+      messageId: String(messageId),
+      senderId: senderId ? String(senderId) : '',
+      receiverId: String(receiverId),
+    };
+
+    io.to(String(receiverId)).emit('message-deleted', payload);
+    if (payload.senderId) {
+      socket.to(payload.senderId).emit('message-deleted', payload);
+    }
+    console.log('server_message_deleted_relayed', JSON.stringify(payload));
+  });
+
   socket.on('group-message-reaction', (data) => {
     const { messageId, reaction, userId, groupId } = data;
     if (!messageId || messageId === 'null' || messageId === 'undefined') {
