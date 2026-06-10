@@ -274,6 +274,8 @@ module.exports = (io, onlineUsers) => {
       await group.save();
       const updated = await Group.findById(group._id).populate('members.userId', 'name avatar');
       io.to(req.params.groupId).emit('group-updated', { groupId: req.params.groupId, group: updated });
+      const addedMemberTarget = onlineUsers[String(userId)] || String(userId);
+      io.to(addedMemberTarget).emit('group-added', { groupId: req.params.groupId, group: updated });
       res.json(updated);
     } catch (err) {
       res.status(500).json({ message: 'Something went wrong!' });
