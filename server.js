@@ -461,6 +461,30 @@ socket.on('private-message', async (data) => {
     });
   });
 
+  socket.on('group-typing', (data) => {
+    const { groupId, userId, userName, avatar } = data || {};
+    if (!groupId || !userId) return;
+    socket.to(String(groupId)).emit('group-typing', { groupId, userId, userName, avatar });
+  });
+
+  socket.on('group-stop-typing', (data) => {
+    const { groupId, userId } = data || {};
+    if (!groupId || !userId) return;
+    socket.to(String(groupId)).emit('group-stop-typing', { groupId, userId });
+  });
+
+  socket.on('group-recording', (data) => {
+    const { groupId, userId, userName, avatar } = data || {};
+    if (!groupId || !userId) return;
+    socket.to(String(groupId)).emit('group-recording', { groupId, userId, userName, avatar });
+  });
+
+  socket.on('group-stop-recording', (data) => {
+    const { groupId, userId } = data || {};
+    if (!groupId || !userId) return;
+    socket.to(String(groupId)).emit('group-stop-recording', { groupId, userId });
+  });
+
   socket.on('typing', (data) => {
     const receiverSocket = onlineUsers[data.receiverId];
     if (receiverSocket) {
