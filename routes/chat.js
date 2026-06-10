@@ -183,6 +183,15 @@ module.exports = (io, onlineUsers) => {
   // Get group messages
   router.get('/groups/:groupId/messages', auth, async (req, res) => {
     try {
+      const group = await Group.findById(req.params.groupId);
+      if (!group || group.isDeleted) {
+        return res.status(404).json({ message: 'Group not found!' });
+      }
+      const isMember = group.members.some(m => m.userId.toString() === req.user.id);
+      if (!isMember) {
+        return res.status(403).json({ message: 'Not a group participant!' });
+      }
+
       const messages = await Message.find({ group: req.params.groupId })
         .populate('sender', 'name')
         .sort({ createdAt: 1 });

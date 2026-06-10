@@ -325,6 +325,18 @@ socket.on('private-message', async (data) => {
       console.log('Empty content in group-message');
       return;
     }
+    const group = await Group.findById(groupId).select('members isDeleted');
+    if (!group || group.isDeleted) {
+      console.log('Rejected group-message for missing/deleted group:', groupId);
+      socket.emit('group-message-rejected', { groupId, reason: 'group_not_found' });
+      return;
+    }
+    const isMember = group.members.some(member => member.userId.toString() === senderId.toString());
+    if (!isMember) {
+      console.log('Rejected group-message from non-member:', { senderId, groupId });
+      socket.emit('group-message-rejected', { groupId, reason: 'not_member' });
+      return;
+    }
     const message = new Message({ sender: senderId, group: groupId, content, replyTo: replyTo || null });
     await message.save();
     socket.to(groupId).emit('group-message', {
