@@ -13,7 +13,10 @@ function getMyRole(group, userId) {
 module.exports = (io, onlineUsers) => {
   const router = express.Router();
 
-  const populatedGroupQuery = (groupId) => Group.findById(groupId).populate('members.userId', 'name avatar');
+  const populatedGroupQuery = (groupId) => Group.findById(groupId)
+    .populate('members.userId', 'name avatar')
+    .populate('formerMembers.userId', 'name avatar')
+    .populate('formerMembers.removedBy', 'name avatar');
 
   const getGroupMemberIds = (group) => {
     if (!group || !Array.isArray(group.members)) return [];
@@ -172,9 +175,20 @@ module.exports = (io, onlineUsers) => {
   // Get my groups
   router.get('/groups', auth, async (req, res) => {
     try {
-      const groups = await Group.find({ 'members.userId': req.user.id, isDeleted: { $ne: true } })
-        .populate('members.userId', 'name avatar');
-      res.json(groups);
+      const groups = await Group.find({
+        isDeleted: { $ne: true },
+        $or: [{ 'members.userId': req.user.id }, { 'formerMembers.userId': req.user.id }]
+      })
+        .populate('members.userId', 'name avatar')
+        .populate('formerMembers.userId', 'name avatar')
+        .populate('formerMembers.removedBy', 'name avatar');
+      const result = groups.map(group => {
+        const obj = group.toObject();
+        obj.isParticipant = group.members.some(m => m.userId && m.userId._id.toString() === req.user.id);
+        obj.isFormerMember = !obj.isParticipant && group.formerMembers.some(m => m.userId && m.userId._id.toString() === req.user.id);
+        return obj;
+      });
+      res.json(result);
     } catch (err) {
       res.status(500).json({ message: 'Something went wrong!' });
     }
@@ -188,7 +202,8 @@ module.exports = (io, onlineUsers) => {
         return res.status(404).json({ message: 'Group not found!' });
       }
       const isMember = group.members.some(m => m.userId.toString() === req.user.id);
-      if (!isMember) {
+      const isFormerMember = (group.formerMembers || []).some(m => m.userId.toString() === req.user.id);
+      if (!isMember && !isFormerMember) {
         return res.status(403).json({ message: 'Not a group participant!' });
       }
 
@@ -276,13 +291,21 @@ module.exports = (io, onlineUsers) => {
   router.get('/groups/:groupId', auth, async (req, res) => {
     try {
       const group = await Group.findById(req.params.groupId)
-        .populate('members.userId', 'name avatar');
+        .populate('members.userId', 'name avatar')
+        .populate('formerMembers.userId', 'name avatar')
+        .populate('formerMembers.removedBy', 'name avatar');
       if (!group) return res.status(404).json({ message: 'Group not found!' });
       const isMember = group.members.some(
         m => m.userId && m.userId._id.toString() === req.user.id
       );
-      if (!isMember) return res.status(403).json({ message: 'Not a member!' });
-      res.json(group);
+      const isFormerMember = (group.formerMembers || []).some(
+        m => m.userId && m.userId._id.toString() === req.user.id
+      );
+      if (!isMember && !isFormerMember) return res.status(403).json({ message: 'Not a member!' });
+      const obj = group.toObject();
+      obj.isParticipant = isMember;
+      obj.isFormerMember = !isMember && isFormerMember;
+      res.json(obj);
     } catch (err) {
       res.status(500).json({ message: 'Something went wrong!' });
     }
@@ -302,6 +325,7 @@ module.exports = (io, onlineUsers) => {
         return res.status(400).json({ message: 'Already a member!' });
       }
       const existingMemberIds = getGroupMemberIds(group);
+      group.formerMembers = (group.formerMembers || []).filter(m => m.userId.toString() !== userId);
       group.members.push({ userId, role: 'member' });
       await group.save();
       const updated = await populatedGroupQuery(group._id);
@@ -334,13 +358,18 @@ module.exports = (io, onlineUsers) => {
         return res.status(403).json({ message: 'Admins can only remove regular members!' });
       }
       group.members = group.members.filter(m => m.userId.toString() !== userId);
+      group.formerMembers = (group.formerMembers || []).filter(m => m.userId.toString() !== userId);
+      group.formerMembers.push({ userId, removedBy: req.user.id, removedAt: new Date(), reason: 'removed' });
       await group.save();
       const updated = await populatedGroupQuery(group._id);
+      const remover = await User.findById(req.user.id).select('name');
       const remainingMemberIds = getGroupMemberIds(updated);
       emitGroupUpdated(updated, remainingMemberIds);
       emitToUserRooms([userId], 'group-member-removed', {
         groupId: group._id.toString(),
         userId: userId.toString(),
+        removedBy: req.user.id,
+        removedByName: remover?.name || 'Admin',
         group: updated
       });
       res.json(updated);
@@ -445,6 +474,8 @@ module.exports = (io, onlineUsers) => {
 
       const leavingUser = await User.findById(req.user.id).select('name');
       group.members = group.members.filter(m => m.userId.toString() !== req.user.id);
+      group.formerMembers = (group.formerMembers || []).filter(m => m.userId.toString() !== req.user.id);
+      group.formerMembers.push({ userId: req.user.id, removedBy: req.user.id, removedAt: new Date(), reason: 'left' });
       await group.save();
       const updated = await populatedGroupQuery(group._id);
       const remainingMemberIds = getGroupMemberIds(updated);
@@ -458,6 +489,8 @@ module.exports = (io, onlineUsers) => {
       emitToUserRooms([req.user.id], 'group-left', {
         groupId: req.params.groupId,
         userId: req.user.id,
+        removedBy: req.user.id,
+        removedByName: leavingUser?.name || 'You',
         group: updated
       });
       res.json({ message: 'Left group!' });
@@ -496,6 +529,12 @@ module.exports = (io, onlineUsers) => {
         deleted: true,
         content: 'This message was deleted'
       });
+      if (message.group) {
+        io.to(String(message.group)).emit('group-message-deleted', {
+          messageId: String(message._id),
+          groupId: String(message.group),
+        });
+      }
       res.json({ message: 'Message deleted!' });
     } catch (err) {
       res.status(500).json({ message: 'Something went wrong!' });
