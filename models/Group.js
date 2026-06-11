@@ -10,6 +10,12 @@ const groupSchema = new mongoose.Schema({
     role: { type: String, enum: ['owner', 'admin', 'member'], default: 'member' },
     joinedAt: { type: Date, default: Date.now }
   }],
+  formerMembers: [{
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    removedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    removedAt: { type: Date, default: Date.now },
+    reason: { type: String, enum: ['removed', 'left'], default: 'removed' }
+  }],
   isDeleted: { type: Boolean, default: false }
 }, { timestamps: true });
 

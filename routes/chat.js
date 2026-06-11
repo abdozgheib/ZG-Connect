@@ -182,14 +182,26 @@ module.exports = (io, onlineUsers) => {
         .populate('members.userId', 'name avatar')
         .populate('formerMembers.userId', 'name avatar')
         .populate('formerMembers.removedBy', 'name avatar');
-      const result = groups.map(group => {
-        const obj = group.toObject();
-        obj.isParticipant = group.members.some(m => m.userId && m.userId._id.toString() === req.user.id);
-        obj.isFormerMember = !obj.isParticipant && group.formerMembers.some(m => m.userId && m.userId._id.toString() === req.user.id);
-        return obj;
-      });
+
+      const result = [];
+      for (const group of groups) {
+        try {
+          const obj = group.toObject();
+          const members = Array.isArray(obj.members) ? obj.members : [];
+          const formerMembers = Array.isArray(obj.formerMembers) ? obj.formerMembers : [];
+          // After populate, userId may be a User doc (has ._id) or null (deleted user).
+          // Use String(m.userId?._id || m.userId || '') to safely handle both cases.
+          const resolveId = (ref) => String(ref?._id || ref || '');
+          obj.isParticipant = members.some(m => m.userId && resolveId(m.userId) === req.user.id);
+          obj.isFormerMember = !obj.isParticipant && formerMembers.some(m => m.userId && resolveId(m.userId) === req.user.id);
+          result.push(obj);
+        } catch (groupErr) {
+          console.error('[GET /groups] failed to map group', group?._id, groupErr);
+        }
+      }
       res.json(result);
     } catch (err) {
+      console.error('[GET /groups] fatal error:', err);
       res.status(500).json({ message: 'Something went wrong!' });
     }
   });
