@@ -341,13 +341,20 @@ module.exports = (io, onlineUsers) => {
       group.members.push({ userId, role: 'member' });
       await group.save();
       const updated = await populatedGroupQuery(group._id);
-      emitGroupAdded(updated, [userId]);
-      emitGroupUpdated(updated, existingMemberIds);
-      emitToUserRooms(existingMemberIds, 'group-member-added', {
+      const [addedUser, adder] = await Promise.all([
+        User.findById(userId).select('name'),
+        User.findById(req.user.id).select('name'),
+      ]);
+      const memberAddedPayload = {
         groupId: group._id.toString(),
         userId: userId.toString(),
-        group: updated
-      });
+        userName: addedUser?.name || 'Someone',
+        addedByName: adder?.name || 'Admin',
+        group: updated,
+      };
+      emitGroupAdded(updated, [userId]);
+      emitGroupUpdated(updated, existingMemberIds);
+      emitToUserRooms([userId, ...existingMemberIds], 'group-member-added', memberAddedPayload);
       res.json(updated);
     } catch (err) {
       res.status(500).json({ message: 'Something went wrong!' });
