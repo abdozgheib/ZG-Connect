@@ -18,7 +18,11 @@ const messageSchema = new mongoose.Schema({
   reactions: [{
     userId: String,
     emoji: String,
-  }]
+  }],
+  readBy: [{
+    userId: { type: String, required: true },
+    readAt: { type: Date, default: Date.now },
+  }],
 }, { timestamps: true });
 
 module.exports = mongoose.model('Message', messageSchema);

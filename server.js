@@ -337,15 +337,24 @@ socket.on('private-message', async (data) => {
       socket.emit('group-message-rejected', { groupId, reason: 'not_member' });
       return;
     }
+    const activeOtherCount = group.members.filter(m => m.userId.toString() !== senderId.toString()).length;
     const message = new Message({ sender: senderId, group: groupId, content, replyTo: replyTo || null });
     await message.save();
+    // Echo real _id + activeOtherCount back to sender for tick tracking
+    socket.emit('group-message-sent', {
+      messageId: message._id,
+      groupId,
+      createdAt: message.createdAt,
+      activeOtherCount,
+    });
     socket.to(groupId).emit('group-message', {
       senderId,
       senderName,
       groupId,
       content,
+      messageId: message._id,
       replyTo: replyTo || null,
-      createdAt: message.createdAt
+      createdAt: message.createdAt,
     });
     socket.to(groupId).emit('notification', {
       type: 'group',
@@ -469,6 +478,38 @@ socket.on('private-message', async (data) => {
       });
     } catch (err) {
       console.log('group-message-reaction error:', err);
+    }
+  });
+
+  socket.on('group-message-read', async (data) => {
+    const { messageId, groupId, userId } = data || {};
+    if (!messageId || messageId === 'null' || messageId === 'undefined') return;
+    if (!groupId || groupId === 'null' || groupId === 'undefined') return;
+    if (!userId || userId === 'null' || userId === 'undefined') return;
+    try {
+      const group = await Group.findById(groupId).select('members');
+      if (!group) return;
+      const isMember = group.members.some(m => m.userId.toString() === userId.toString());
+      if (!isMember) return;
+      const msg = await Message.findById(messageId).select('sender readBy');
+      if (!msg) return;
+      const alreadyRead = (msg.readBy || []).some(r => String(r.userId) === String(userId));
+      if (!alreadyRead) {
+        const readAt = new Date();
+        await Message.findByIdAndUpdate(messageId, {
+          $push: { readBy: { userId: String(userId), readAt } }
+        });
+        const senderSocket = onlineUsers[msg.sender.toString()];
+        if (senderSocket) {
+          io.to(senderSocket).emit('group-message-read', {
+            messageId: String(messageId),
+            userId: String(userId),
+            readAt,
+          });
+        }
+      }
+    } catch (err) {
+      console.log('group-message-read error:', err);
     }
   });
 

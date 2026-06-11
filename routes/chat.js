@@ -219,10 +219,20 @@ module.exports = (io, onlineUsers) => {
         return res.status(403).json({ message: 'Not a group participant!' });
       }
 
+      const activeOtherCount = group.members.filter(
+        m => m.userId.toString() !== req.user.id
+      ).length;
       const messages = await Message.find({ group: req.params.groupId })
         .populate('sender', 'name')
         .sort({ createdAt: 1 });
-      res.json(messages);
+      const result = messages.map(m => {
+        const obj = m.toObject();
+        if (String(m.sender._id || m.sender) === req.user.id) {
+          obj.activeOtherCount = activeOtherCount;
+        }
+        return obj;
+      });
+      res.json(result);
     } catch (err) {
       res.status(500).json({ message: 'Something went wrong!' });
     }
