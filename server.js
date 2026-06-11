@@ -434,8 +434,8 @@ socket.on('private-message', async (data) => {
     console.log('server_message_deleted_relayed', JSON.stringify(payload));
   });
 
-  socket.on('group-message-reaction', (data) => {
-    const { messageId, reaction, userId, groupId } = data;
+  socket.on('group-message-reaction', async (data) => {
+    const { messageId, emoji, userId, groupId } = data;
     if (!messageId || messageId === 'null' || messageId === 'undefined') {
       console.log('Invalid messageId in group-message-reaction:', messageId);
       return;
@@ -448,17 +448,28 @@ socket.on('private-message', async (data) => {
       console.log('Invalid groupId in group-message-reaction:', groupId);
       return;
     }
-
-    Message.findByIdAndUpdate(
-      messageId,
-      { $push: { reactions: { userId, emoji: reaction } } }
-    ).catch(err => console.log(err));
-
-    socket.to(groupId).emit('group-message-reaction', {
-      messageId,
-      reaction,
-      userId,
-    });
+    if (!emoji || typeof emoji !== 'string') {
+      console.log('Invalid emoji in group-message-reaction:', emoji);
+      return;
+    }
+    try {
+      const msg = await Message.findById(messageId, { reactions: 1 });
+      if (!msg) return;
+      const existing = (msg.reactions || []).find(r => String(r.userId) === String(userId));
+      const isToggleOff = existing && existing.emoji === emoji;
+      await Message.findByIdAndUpdate(messageId, { $pull: { reactions: { userId: String(userId) } } });
+      if (!isToggleOff) {
+        await Message.findByIdAndUpdate(messageId, { $push: { reactions: { userId: String(userId), emoji } } });
+      }
+      io.to(String(groupId)).emit('group-message-reaction', {
+        messageId,
+        userId,
+        emoji,
+        action: isToggleOff ? 'remove' : 'set',
+      });
+    } catch (err) {
+      console.log('group-message-reaction error:', err);
+    }
   });
 
   socket.on('group-typing', (data) => {
