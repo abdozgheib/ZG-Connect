@@ -173,7 +173,10 @@ socket.on('private-message', async (data) => {
         messageId: message._id,
         createdAt: message.createdAt
       });
-      io.to(socket.id).emit('message-delivered', { messageId: message._id });
+      // Receiver is online → mark delivered in DB immediately before notifying sender
+      const onlineDeliveredAt = new Date();
+      await Message.findByIdAndUpdate(message._id, { delivered: true, deliveredAt: onlineDeliveredAt });
+      io.to(socket.id).emit('message-delivered', { messageId: message._id, deliveredAt: onlineDeliveredAt });
     }
 
     // Send FCM notification (respects messageNotifications setting)
@@ -248,10 +251,21 @@ socket.on('private-message', async (data) => {
     }));
     if (!messageId || !senderId) return;
     try {
-      await Message.findByIdAndUpdate(messageId, { delivered: true, deliveredAt: Date.now() });
+      const deliveredAt = new Date();
+      console.log('message_delivered_db_before', JSON.stringify({ messageId: String(messageId) }));
+      const updatedDelivered = await Message.findByIdAndUpdate(
+        messageId,
+        { delivered: true, deliveredAt },
+        { new: true }
+      ).select('delivered deliveredAt');
+      console.log('message_delivered_db_after', JSON.stringify({
+        messageId: String(messageId),
+        delivered: updatedDelivered?.delivered,
+        deliveredAt: updatedDelivered?.deliveredAt || null,
+      }));
       const senderSocket = onlineUsers[senderId];
       if (senderSocket) {
-        io.to(senderSocket).emit('message-delivered', { messageId });
+        io.to(senderSocket).emit('message-delivered', { messageId, deliveredAt });
         console.log('server_message_delivered_relayed', JSON.stringify({
           messageId: String(messageId),
           senderId: String(senderId),
@@ -279,7 +293,20 @@ socket.on('private-message', async (data) => {
       readerSocketId: socket.id
     }));
     if (!messageId || !senderId) return;
-    await Message.findByIdAndUpdate(messageId, { read: true, readAt: Date.now() });
+    const readAt = new Date();
+    console.log('message_read_db_before', JSON.stringify({ messageId: String(messageId) }));
+    const updatedRead = await Message.findByIdAndUpdate(
+      messageId,
+      { read: true, readAt },
+      { new: true }
+    ).select('read readAt delivered deliveredAt');
+    console.log('message_read_db_after', JSON.stringify({
+      messageId: String(messageId),
+      read: updatedRead?.read,
+      readAt: updatedRead?.readAt || null,
+      delivered: updatedRead?.delivered,
+      deliveredAt: updatedRead?.deliveredAt || null,
+    }));
     // Only forward read receipt if the reader has read receipts enabled
     const readerId = Object.keys(onlineUsers).find(k => onlineUsers[k] === socket.id);
     if (readerId) {
@@ -295,7 +322,7 @@ socket.on('private-message', async (data) => {
     }
     const senderSocket = onlineUsers[senderId];
     if (senderSocket) {
-      io.to(senderSocket).emit('message-read', { messageId });
+      io.to(senderSocket).emit('message-read', { messageId, readAt });
       console.log('server_message_read_relayed', JSON.stringify({
         messageId: String(messageId),
         senderId: String(senderId),
@@ -557,6 +584,11 @@ socket.on('private-message', async (data) => {
 
   socket.on('message-played', async (data) => {
     const { messageId, senderId } = data || {};
+    console.log('message_played_received', JSON.stringify({
+      messageId: messageId ? String(messageId) : null,
+      senderId: senderId ? String(senderId) : null,
+      receiverSocketId: socket.id,
+    }));
     if (!messageId || !senderId) return;
     try {
       const msg = await Message.findById(messageId).select('sender playedBy');
@@ -568,13 +600,34 @@ socket.on('private-message', async (data) => {
         await Message.findByIdAndUpdate(messageId, {
           $push: { playedBy: { userId: String(playerId), playedAt } }
         });
+        console.log('message_played_db_saved', JSON.stringify({
+          messageId: String(messageId),
+          playerId: String(playerId),
+          playedAt,
+        }));
         const senderSocket = onlineUsers[String(senderId)];
         if (senderSocket) {
           io.to(senderSocket).emit('message-played', { messageId: String(messageId), playedAt });
+          console.log('message_played_relayed', JSON.stringify({
+            messageId: String(messageId),
+            senderSocket,
+          }));
+        } else {
+          console.log('message_played_relayed', JSON.stringify({
+            messageId: String(messageId),
+            senderSocket: null,
+            skipped: 'sender_offline',
+          }));
         }
+      } else {
+        console.log('message_played_skipped', JSON.stringify({
+          messageId: String(messageId),
+          playerId: String(playerId),
+          reason: alreadyPlayed ? 'already_played' : 'no_player_id',
+        }));
       }
     } catch (err) {
-      console.log('message-played error:', err);
+      console.log('message_played_error', String(err));
     }
   });
 
