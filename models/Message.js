@@ -23,6 +23,10 @@ const messageSchema = new mongoose.Schema({
     userId: { type: String, required: true },
     readAt: { type: Date, default: Date.now },
   }],
+  deliveredTo: [{
+    userId: { type: String, required: true },
+    deliveredAt: { type: Date, default: Date.now },
+  }],
 }, { timestamps: true });
 
 module.exports = mongoose.model('Message', messageSchema);

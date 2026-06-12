@@ -481,6 +481,38 @@ socket.on('private-message', async (data) => {
     }
   });
 
+  socket.on('group-message-delivered', async (data) => {
+    const { messageId, groupId, userId } = data || {};
+    if (!messageId || messageId === 'null' || messageId === 'undefined') return;
+    if (!groupId || groupId === 'null' || groupId === 'undefined') return;
+    if (!userId || userId === 'null' || userId === 'undefined') return;
+    try {
+      const group = await Group.findById(groupId).select('members');
+      if (!group) return;
+      const isMember = group.members.some(m => m.userId.toString() === userId.toString());
+      if (!isMember) return;
+      const msg = await Message.findById(messageId).select('sender deliveredTo');
+      if (!msg) return;
+      const alreadyDelivered = (msg.deliveredTo || []).some(d => String(d.userId) === String(userId));
+      if (!alreadyDelivered) {
+        const deliveredAt = new Date();
+        await Message.findByIdAndUpdate(messageId, {
+          $push: { deliveredTo: { userId: String(userId), deliveredAt } }
+        });
+        const senderSocket = onlineUsers[msg.sender.toString()];
+        if (senderSocket) {
+          io.to(senderSocket).emit('group-message-delivered', {
+            messageId: String(messageId),
+            userId: String(userId),
+            deliveredAt,
+          });
+        }
+      }
+    } catch (err) {
+      console.log('group-message-delivered error:', err);
+    }
+  });
+
   socket.on('group-message-read', async (data) => {
     const { messageId, groupId, userId } = data || {};
     if (!messageId || messageId === 'null' || messageId === 'undefined') return;
