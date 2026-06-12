@@ -546,6 +546,50 @@ module.exports = (io, onlineUsers) => {
     }
   });
 
+  // Message Info (read/delivered/not-read breakdown for a sent group message)
+  router.get('/messages/:messageId/info', auth, async (req, res) => {
+    try {
+      const message = await Message.findById(req.params.messageId);
+      if (!message) return res.status(404).json({ message: 'Message not found!' });
+      if (!message.group) return res.status(400).json({ message: 'Not a group message!' });
+      if (message.sender.toString() !== req.user.id) {
+        return res.status(403).json({ message: 'You can only view info for your own messages!' });
+      }
+      const group = await Group.findById(message.group)
+        .populate('members.userId', 'name avatar');
+      if (!group) return res.status(404).json({ message: 'Group not found!' });
+
+      const readByMap = new Map(
+        (message.readBy || []).map(r => [String(r.userId), r.readAt])
+      );
+      const deliveredMap = new Map(
+        (message.deliveredTo || []).map(d => [String(d.userId), d.deliveredAt])
+      );
+
+      const readBy = [];
+      const deliveredTo = [];
+      const notRead = [];
+
+      group.members.forEach(member => {
+        const userId = String(member.userId?._id || member.userId);
+        if (userId === req.user.id) return;
+        const name = member.userId?.name || 'Unknown';
+        const avatar = member.userId?.avatar || null;
+        if (readByMap.has(userId)) {
+          readBy.push({ userId, name, avatar, readAt: readByMap.get(userId) });
+        } else if (deliveredMap.has(userId)) {
+          deliveredTo.push({ userId, name, avatar, deliveredAt: deliveredMap.get(userId) });
+        } else {
+          notRead.push({ userId, name, avatar });
+        }
+      });
+
+      res.json({ readBy, deliveredTo, notRead });
+    } catch (err) {
+      res.status(500).json({ message: 'Something went wrong!' });
+    }
+  });
+
   // Delete message
   router.delete('/messages/:messageId', auth, async (req, res) => {
     try {
