@@ -374,7 +374,7 @@ socket.on('private-message', async (data) => {
             m.userId.fcmToken,
             `${senderName} in ${groupName}`,
             preview,
-            { type: 'group_message', groupId: groupId.toString(), groupName, senderName }
+            { type: 'group_message', groupId: groupId.toString(), groupName, senderName, senderId: senderId.toString(), messageId: message._id.toString() }
           ));
         await Promise.allSettled(notifPromises);
       }
@@ -483,29 +483,35 @@ socket.on('private-message', async (data) => {
 
   socket.on('group-message-delivered', async (data) => {
     const { messageId, groupId, userId } = data || {};
+    console.log('group_message_delivered_received', JSON.stringify({ messageId, groupId, userId }));
     if (!messageId || messageId === 'null' || messageId === 'undefined') return;
     if (!groupId || groupId === 'null' || groupId === 'undefined') return;
     if (!userId || userId === 'null' || userId === 'undefined') return;
     try {
       const group = await Group.findById(groupId).select('members');
-      if (!group) return;
+      if (!group) { console.log('group_message_delivered_no_group', JSON.stringify({ groupId })); return; }
       const isMember = group.members.some(m => m.userId.toString() === userId.toString());
-      if (!isMember) return;
+      if (!isMember) { console.log('group_message_delivered_not_member', JSON.stringify({ groupId, userId })); return; }
       const msg = await Message.findById(messageId).select('sender deliveredTo');
-      if (!msg) return;
+      if (!msg) { console.log('group_message_delivered_no_msg', JSON.stringify({ messageId })); return; }
+      const senderId = msg.sender.toString();
       const alreadyDelivered = (msg.deliveredTo || []).some(d => String(d.userId) === String(userId));
+      console.log('group_message_delivered_state', JSON.stringify({ messageId, groupId, userId, senderId, alreadyDelivered, deliveredToCount: (msg.deliveredTo || []).length }));
       if (!alreadyDelivered) {
         const deliveredAt = new Date();
         await Message.findByIdAndUpdate(messageId, {
           $push: { deliveredTo: { userId: String(userId), deliveredAt } }
         });
-        const senderSocket = onlineUsers[msg.sender.toString()];
+        console.log('group_message_delivered_saved', JSON.stringify({ messageId, groupId, userId, senderId }));
+        const senderSocket = onlineUsers[senderId];
+        console.log('group_message_delivered_sender_socket', JSON.stringify({ senderId, senderSocketId: senderSocket || null, senderOnline: !!senderSocket }));
         if (senderSocket) {
           io.to(senderSocket).emit('group-message-delivered', {
             messageId: String(messageId),
             userId: String(userId),
             deliveredAt,
           });
+          console.log('group_message_delivered_emitted_to_sender', JSON.stringify({ messageId, userId, senderId, senderSocket }));
         }
       }
     } catch (err) {
