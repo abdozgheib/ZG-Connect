@@ -566,15 +566,23 @@ module.exports = (io, onlineUsers) => {
         (message.deliveredTo || []).map(d => [String(d.userId), d.deliveredAt])
       );
 
+      const playedByMap = new Map(
+        (message.playedBy || []).map(p => [String(p.userId), p.playedAt])
+      );
+
       const readBy = [];
       const deliveredTo = [];
       const notRead = [];
+      const playedBy = [];
 
       group.members.forEach(member => {
         const userId = String(member.userId?._id || member.userId);
         if (userId === req.user.id) return;
         const name = member.userId?.name || 'Unknown';
         const avatar = member.userId?.avatar || null;
+        if (playedByMap.has(userId)) {
+          playedBy.push({ userId, name, avatar, playedAt: playedByMap.get(userId) });
+        }
         if (readByMap.has(userId)) {
           readBy.push({ userId, name, avatar, readAt: readByMap.get(userId) });
         } else if (deliveredMap.has(userId)) {
@@ -584,7 +592,28 @@ module.exports = (io, onlineUsers) => {
         }
       });
 
-      res.json({ readBy, deliveredTo, notRead });
+      res.json({ readBy, deliveredTo, notRead, playedBy });
+    } catch (err) {
+      res.status(500).json({ message: 'Something went wrong!' });
+    }
+  });
+
+  // Private Message Info (played/read/delivered for sent private messages)
+  router.get('/messages/:messageId/private-info', auth, async (req, res) => {
+    try {
+      const message = await Message.findById(req.params.messageId);
+      if (!message) return res.status(404).json({ message: 'Message not found!' });
+      if (message.group) return res.status(400).json({ message: 'Not a private message!' });
+      if (message.sender.toString() !== req.user.id) {
+        return res.status(403).json({ message: 'You can only view info for your own messages!' });
+      }
+      res.json({
+        delivered: message.delivered || false,
+        deliveredAt: message.deliveredAt || null,
+        read: message.read || false,
+        readAt: message.readAt || null,
+        playedBy: message.playedBy || [],
+      });
     } catch (err) {
       res.status(500).json({ message: 'Something went wrong!' });
     }

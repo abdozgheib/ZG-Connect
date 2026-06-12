@@ -555,6 +555,55 @@ socket.on('private-message', async (data) => {
     }
   });
 
+  socket.on('message-played', async (data) => {
+    const { messageId, senderId } = data || {};
+    if (!messageId || !senderId) return;
+    try {
+      const msg = await Message.findById(messageId).select('sender playedBy');
+      if (!msg) return;
+      const playerId = Object.keys(onlineUsers).find(k => onlineUsers[k] === socket.id) || '';
+      const alreadyPlayed = (msg.playedBy || []).some(p => String(p.userId) === String(playerId));
+      if (!alreadyPlayed && playerId) {
+        const playedAt = new Date();
+        await Message.findByIdAndUpdate(messageId, {
+          $push: { playedBy: { userId: String(playerId), playedAt } }
+        });
+        const senderSocket = onlineUsers[String(senderId)];
+        if (senderSocket) {
+          io.to(senderSocket).emit('message-played', { messageId: String(messageId), playedAt });
+        }
+      }
+    } catch (err) {
+      console.log('message-played error:', err);
+    }
+  });
+
+  socket.on('group-message-played', async (data) => {
+    const { messageId, groupId, userId } = data || {};
+    if (!messageId || !groupId || !userId) return;
+    try {
+      const msg = await Message.findById(messageId).select('sender playedBy');
+      if (!msg) return;
+      const alreadyPlayed = (msg.playedBy || []).some(p => String(p.userId) === String(userId));
+      if (!alreadyPlayed) {
+        const playedAt = new Date();
+        await Message.findByIdAndUpdate(messageId, {
+          $push: { playedBy: { userId: String(userId), playedAt } }
+        });
+        const senderSocket = onlineUsers[msg.sender.toString()];
+        if (senderSocket) {
+          io.to(senderSocket).emit('group-message-played', {
+            messageId: String(messageId),
+            userId: String(userId),
+            playedAt,
+          });
+        }
+      }
+    } catch (err) {
+      console.log('group-message-played error:', err);
+    }
+  });
+
   socket.on('group-typing', (data) => {
     const { groupId, userId, userName, avatar } = data || {};
     if (!groupId || !userId) return;

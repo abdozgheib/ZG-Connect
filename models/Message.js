@@ -19,6 +19,7 @@ const messageSchema = new mongoose.Schema({
     userId: String,
     emoji: String,
   }],
+  deliveredAt: { type: Date },
   readBy: [{
     userId: { type: String, required: true },
     readAt: { type: Date, default: Date.now },
@@ -26,6 +27,10 @@ const messageSchema = new mongoose.Schema({
   deliveredTo: [{
     userId: { type: String, required: true },
     deliveredAt: { type: Date, default: Date.now },
+  }],
+  playedBy: [{
+    userId: { type: String, required: true },
+    playedAt: { type: Date, default: Date.now },
   }],
 }, { timestamps: true });
 
