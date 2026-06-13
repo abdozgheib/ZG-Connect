@@ -556,8 +556,16 @@ module.exports = (io, onlineUsers) => {
         return res.status(403).json({ message: 'You can only view info for your own messages!' });
       }
       const group = await Group.findById(message.group)
-        .populate('members.userId', 'name avatar');
+        .populate('members.userId', 'name avatar')
+        .populate('formerMembers.userId', 'name avatar');
       if (!group) return res.status(404).json({ message: 'Group not found!' });
+
+      console.log('GROUP_INFO_RAW_DB', JSON.stringify({
+        messageId: String(message._id),
+        deliveredToLength: (message.deliveredTo || []).length,
+        readByLength: (message.readBy || []).length,
+        playedByLength: (message.playedBy || []).length,
+      }));
 
       const readByMap = new Map(
         (message.readBy || []).map(r => [String(r.userId), r.readAt])
@@ -565,33 +573,79 @@ module.exports = (io, onlineUsers) => {
       const deliveredMap = new Map(
         (message.deliveredTo || []).map(d => [String(d.userId), d.deliveredAt])
       );
-
       const playedByMap = new Map(
         (message.playedBy || []).map(p => [String(p.userId), p.playedAt])
       );
+
+      // Build name/avatar lookup from both current and former members so readBy
+      // entries from users who since left the group still resolve correctly.
+      const memberInfoMap = new Map();
+      [...group.members, ...(group.formerMembers || [])].forEach(m => {
+        const uid = String(m.userId?._id || m.userId);
+        if (uid && uid !== 'null' && uid !== 'undefined') {
+          memberInfoMap.set(uid, {
+            name: m.userId?.name || 'Unknown',
+            avatar: m.userId?.avatar || null,
+          });
+        }
+      });
 
       const readBy = [];
       const deliveredTo = [];
       const notRead = [];
       const playedBy = [];
 
+      // Categorise current members only (delivered/notRead only makes sense for active members)
       group.members.forEach(member => {
         const userId = String(member.userId?._id || member.userId);
-        if (userId === req.user.id) return;
-        const name = member.userId?.name || 'Unknown';
-        const avatar = member.userId?.avatar || null;
+        if (!userId || userId === 'null' || userId === req.user.id) return;
+        const info = memberInfoMap.get(userId) || { name: 'Unknown', avatar: null };
         if (playedByMap.has(userId)) {
-          playedBy.push({ userId, name, avatar, playedAt: playedByMap.get(userId) });
+          playedBy.push({ userId, name: info.name, avatar: info.avatar, playedAt: playedByMap.get(userId) });
         }
         if (readByMap.has(userId)) {
-          readBy.push({ userId, name, avatar, readAt: readByMap.get(userId) });
+          readBy.push({ userId, name: info.name, avatar: info.avatar, readAt: readByMap.get(userId) });
         } else if (deliveredMap.has(userId)) {
-          deliveredTo.push({ userId, name, avatar, deliveredAt: deliveredMap.get(userId) });
+          deliveredTo.push({ userId, name: info.name, avatar: info.avatar, deliveredAt: deliveredMap.get(userId) });
         } else {
-          notRead.push({ userId, name, avatar });
+          notRead.push({ userId, name: info.name, avatar: info.avatar });
         }
       });
 
+      // Former members who read/played before leaving still appear in readBy/playedBy
+      (group.formerMembers || []).forEach(member => {
+        const userId = String(member.userId?._id || member.userId);
+        if (!userId || userId === 'null' || userId === req.user.id) return;
+        const info = memberInfoMap.get(userId) || { name: 'Unknown', avatar: null };
+        if (playedByMap.has(userId)) {
+          playedBy.push({ userId, name: info.name, avatar: info.avatar, playedAt: playedByMap.get(userId) });
+        }
+        if (readByMap.has(userId)) {
+          readBy.push({ userId, name: info.name, avatar: info.avatar, readAt: readByMap.get(userId) });
+        }
+      });
+
+      console.log('GROUP_INFO_DEBUG', JSON.stringify({
+        messageId: req.params.messageId,
+        requestingUserId: req.user.id,
+        sender: String(message.sender),
+        groupId: String(message.group),
+        membersCount: group.members.length,
+        readByRawCount: (message.readBy || []).length,
+        deliveredToRawCount: (message.deliveredTo || []).length,
+        playedByRawCount: (message.playedBy || []).length,
+        readByUserIds: (message.readBy || []).map(r => String(r.userId)),
+        groupMemberUserIds: group.members.map(m => String(m.userId?._id || m.userId)),
+        resolvedReadByCount: readBy.length,
+        resolvedDeliveredToCount: deliveredTo.length,
+        resolvedNotReadCount: notRead.length,
+        resolvedPlayedByCount: playedBy.length,
+      }));
+      console.log('GROUP_INFO_RESPONSE_DEBUG', JSON.stringify({
+        deliveredToCount: deliveredTo.length,
+        readByCount: readBy.length,
+        playedByCount: playedBy.length,
+      }));
       res.json({ readBy, deliveredTo, notRead, playedBy });
     } catch (err) {
       res.status(500).json({ message: 'Something went wrong!' });
@@ -607,6 +661,21 @@ module.exports = (io, onlineUsers) => {
       if (message.sender.toString() !== req.user.id) {
         return res.status(403).json({ message: 'You can only view info for your own messages!' });
       }
+      const msgObj = message.toObject();
+      console.log('PRIVATE_INFO_DEBUG', JSON.stringify({
+        messageId: req.params.messageId,
+        requestingUserId: req.user.id,
+        sender: String(message.sender),
+        receiver: String(message.receiver || ''),
+        delivered: message.delivered,
+        deliveredAt: message.deliveredAt || null,
+        read: message.read,
+        readAt: message.readAt || null,
+        playedByCount: (message.playedBy || []).length,
+        rawMessageKeys: Object.keys(msgObj),
+        deliveredAtInKeys: 'deliveredAt' in msgObj,
+        readAtInKeys: 'readAt' in msgObj,
+      }));
       res.json({
         delivered: message.delivered || false,
         deliveredAt: message.deliveredAt || null,

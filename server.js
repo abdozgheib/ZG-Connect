@@ -552,6 +552,11 @@ socket.on('private-message', async (data) => {
 
   socket.on('group-message-read', async (data) => {
     const { messageId, groupId, userId } = data || {};
+    console.log('group_message_read_received', JSON.stringify({
+      messageId: messageId ? String(messageId) : null,
+      groupId: groupId ? String(groupId) : null,
+      userId: userId ? String(userId) : null,
+    }));
     if (!messageId || messageId === 'null' || messageId === 'undefined') return;
     if (!groupId || groupId === 'null' || groupId === 'undefined') return;
     if (!userId || userId === 'null' || userId === 'undefined') return;
@@ -565,9 +570,14 @@ socket.on('private-message', async (data) => {
       const alreadyRead = (msg.readBy || []).some(r => String(r.userId) === String(userId));
       if (!alreadyRead) {
         const readAt = new Date();
-        await Message.findByIdAndUpdate(messageId, {
+        const updatedMsg = await Message.findByIdAndUpdate(messageId, {
           $push: { readBy: { userId: String(userId), readAt } }
-        });
+        }, { new: true }).select('readBy');
+        console.log('group_message_read_db_saved', JSON.stringify({
+          messageId: String(messageId),
+          userId: String(userId),
+          readByLength: (updatedMsg?.readBy || []).length,
+        }));
         const senderSocket = onlineUsers[msg.sender.toString()];
         if (senderSocket) {
           io.to(senderSocket).emit('group-message-read', {
@@ -576,6 +586,12 @@ socket.on('private-message', async (data) => {
             readAt,
           });
         }
+      } else {
+        console.log('group_message_read_skipped', JSON.stringify({
+          messageId: String(messageId),
+          userId: String(userId),
+          reason: 'already_read',
+        }));
       }
     } catch (err) {
       console.log('group-message-read error:', err);
@@ -633,6 +649,11 @@ socket.on('private-message', async (data) => {
 
   socket.on('group-message-played', async (data) => {
     const { messageId, groupId, userId } = data || {};
+    console.log('group_message_played_received', JSON.stringify({
+      messageId: messageId ? String(messageId) : null,
+      groupId: groupId ? String(groupId) : null,
+      userId: userId ? String(userId) : null,
+    }));
     if (!messageId || !groupId || !userId) return;
     try {
       const msg = await Message.findById(messageId).select('sender playedBy');
@@ -640,9 +661,14 @@ socket.on('private-message', async (data) => {
       const alreadyPlayed = (msg.playedBy || []).some(p => String(p.userId) === String(userId));
       if (!alreadyPlayed) {
         const playedAt = new Date();
-        await Message.findByIdAndUpdate(messageId, {
+        const updatedMsg = await Message.findByIdAndUpdate(messageId, {
           $push: { playedBy: { userId: String(userId), playedAt } }
-        });
+        }, { new: true }).select('playedBy');
+        console.log('group_message_played_db_saved', JSON.stringify({
+          messageId: String(messageId),
+          userId: String(userId),
+          playedByLength: (updatedMsg?.playedBy || []).length,
+        }));
         const senderSocket = onlineUsers[msg.sender.toString()];
         if (senderSocket) {
           io.to(senderSocket).emit('group-message-played', {
@@ -651,6 +677,12 @@ socket.on('private-message', async (data) => {
             playedAt,
           });
         }
+      } else {
+        console.log('group_message_played_skipped', JSON.stringify({
+          messageId: String(messageId),
+          userId: String(userId),
+          reason: 'already_played',
+        }));
       }
     } catch (err) {
       console.log('group-message-played error:', err);
