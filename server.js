@@ -557,16 +557,36 @@ socket.on('private-message', async (data) => {
       groupId: groupId ? String(groupId) : null,
       userId: userId ? String(userId) : null,
     }));
-    if (!messageId || messageId === 'null' || messageId === 'undefined') return;
-    if (!groupId || groupId === 'null' || groupId === 'undefined') return;
-    if (!userId || userId === 'null' || userId === 'undefined') return;
+    if (!messageId || messageId === 'null' || messageId === 'undefined') {
+      console.log('group_message_read_skip', JSON.stringify({ reason: 'missing_messageId' }));
+      return;
+    }
+    if (!groupId || groupId === 'null' || groupId === 'undefined') {
+      console.log('group_message_read_skip', JSON.stringify({ reason: 'missing_groupId' }));
+      return;
+    }
+    if (!userId || userId === 'null' || userId === 'undefined') {
+      console.log('group_message_read_skip', JSON.stringify({ reason: 'missing_userId' }));
+      return;
+    }
     try {
-      const group = await Group.findById(groupId).select('members');
-      if (!group) return;
-      const isMember = group.members.some(m => m.userId.toString() === userId.toString());
-      if (!isMember) return;
-      const msg = await Message.findById(messageId).select('sender readBy');
-      if (!msg) return;
+      const msg = await Message.findById(messageId).select('sender readBy group');
+      if (!msg) {
+        console.log('group_message_read_skip', JSON.stringify({ reason: 'message_not_found', messageId: String(messageId) }));
+        return;
+      }
+      if (String(msg.group) !== String(groupId)) {
+        console.log('group_message_read_skip', JSON.stringify({ reason: 'group_mismatch', msgGroup: String(msg.group), groupId: String(groupId) }));
+        return;
+      }
+      if (!msg.sender) {
+        console.log('group_message_read_skip', JSON.stringify({ reason: 'sender_missing', messageId: String(messageId) }));
+        return;
+      }
+      if (String(msg.sender) === String(userId)) {
+        console.log('group_message_read_skip', JSON.stringify({ reason: 'sender_self_read', userId: String(userId) }));
+        return;
+      }
       const alreadyRead = (msg.readBy || []).some(r => String(r.userId) === String(userId));
       if (!alreadyRead) {
         const readAt = new Date();
@@ -585,16 +605,19 @@ socket.on('private-message', async (data) => {
             userId: String(userId),
             readAt,
           });
+        } else {
+          console.log('group_message_read_skip', JSON.stringify({ reason: 'sender_offline', senderId: msg.sender.toString() }));
         }
       } else {
         console.log('group_message_read_skipped', JSON.stringify({
           messageId: String(messageId),
           userId: String(userId),
           reason: 'already_read',
+          readByLength: (msg.readBy || []).length,
         }));
       }
     } catch (err) {
-      console.log('group-message-read error:', err);
+      console.log('group_message_read_error', String(err));
     }
   });
 
@@ -654,10 +677,36 @@ socket.on('private-message', async (data) => {
       groupId: groupId ? String(groupId) : null,
       userId: userId ? String(userId) : null,
     }));
-    if (!messageId || !groupId || !userId) return;
+    if (!messageId || messageId === 'null' || messageId === 'undefined') {
+      console.log('group_message_played_skip', JSON.stringify({ reason: 'missing_messageId' }));
+      return;
+    }
+    if (!groupId || groupId === 'null' || groupId === 'undefined') {
+      console.log('group_message_played_skip', JSON.stringify({ reason: 'missing_groupId' }));
+      return;
+    }
+    if (!userId || userId === 'null' || userId === 'undefined') {
+      console.log('group_message_played_skip', JSON.stringify({ reason: 'missing_userId' }));
+      return;
+    }
     try {
-      const msg = await Message.findById(messageId).select('sender playedBy');
-      if (!msg) return;
+      const msg = await Message.findById(messageId).select('sender playedBy group');
+      if (!msg) {
+        console.log('group_message_played_skip', JSON.stringify({ reason: 'message_not_found', messageId: String(messageId) }));
+        return;
+      }
+      if (String(msg.group) !== String(groupId)) {
+        console.log('group_message_played_skip', JSON.stringify({ reason: 'group_mismatch', msgGroup: String(msg.group), groupId: String(groupId) }));
+        return;
+      }
+      if (!msg.sender) {
+        console.log('group_message_played_skip', JSON.stringify({ reason: 'sender_missing', messageId: String(messageId) }));
+        return;
+      }
+      if (String(msg.sender) === String(userId)) {
+        console.log('group_message_played_skip', JSON.stringify({ reason: 'sender_self_played', userId: String(userId) }));
+        return;
+      }
       const alreadyPlayed = (msg.playedBy || []).some(p => String(p.userId) === String(userId));
       if (!alreadyPlayed) {
         const playedAt = new Date();
@@ -676,16 +725,19 @@ socket.on('private-message', async (data) => {
             userId: String(userId),
             playedAt,
           });
+        } else {
+          console.log('group_message_played_skip', JSON.stringify({ reason: 'sender_offline', senderId: msg.sender.toString() }));
         }
       } else {
         console.log('group_message_played_skipped', JSON.stringify({
           messageId: String(messageId),
           userId: String(userId),
           reason: 'already_played',
+          playedByLength: (msg.playedBy || []).length,
         }));
       }
     } catch (err) {
-      console.log('group-message-played error:', err);
+      console.log('group_message_played_error', String(err));
     }
   });
 
