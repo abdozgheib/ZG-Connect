@@ -798,6 +798,27 @@ socket.on('private-message', async (data) => {
     }
   });
 
+  socket.on('recording', (data) => {
+    const receiverSocket = onlineUsers[data.receiverId];
+    console.log('[recording] senderId:', data.senderId, 'receiverId:', data.receiverId, 'receiverSocket:', receiverSocket || 'NOT FOUND');
+    if (receiverSocket) {
+      io.to(receiverSocket).emit('recording', {
+        senderId: data.senderId,
+        senderName: data.senderName
+      });
+    }
+  });
+
+  socket.on('stop-recording', (data) => {
+    const receiverSocket = onlineUsers[data.receiverId];
+    console.log('[stop-recording] senderId:', data.senderId, 'receiverId:', data.receiverId, 'receiverSocket:', receiverSocket || 'NOT FOUND');
+    if (receiverSocket) {
+      io.to(receiverSocket).emit('stop-recording', {
+        senderId: data.senderId
+      });
+    }
+  });
+
   // Call offer - caller sends to receiver
   socket.on('call-offer', async (data) => {
     const { callerId, callerName, callerAvatar, targetUserId, offer, callType, callId } = data;
