@@ -251,18 +251,32 @@ socket.on('private-message', async (data) => {
     }));
     if (!messageId || !senderId) return;
     try {
-      const deliveredAt = new Date();
-      console.log('message_delivered_db_before', JSON.stringify({ messageId: String(messageId) }));
-      const updatedDelivered = await Message.findByIdAndUpdate(
-        messageId,
-        { delivered: true, deliveredAt },
-        { new: true }
-      ).select('delivered deliveredAt');
-      console.log('message_delivered_db_after', JSON.stringify({
-        messageId: String(messageId),
-        delivered: updatedDelivered?.delivered,
-        deliveredAt: updatedDelivered?.deliveredAt || null,
-      }));
+      const existing = await Message.findById(messageId).select('delivered deliveredAt');
+      let deliveredAt;
+      if (existing?.deliveredAt) {
+        // deliveredAt already set — preserve original timestamp, do not overwrite
+        deliveredAt = existing.deliveredAt;
+        console.log('message_delivered_db_after', JSON.stringify({
+          messageId: String(messageId),
+          delivered: existing.delivered,
+          deliveredAt: existing.deliveredAt,
+          skipped: 'already_set',
+        }));
+      } else {
+        // First delivery — write to DB
+        deliveredAt = new Date();
+        console.log('message_delivered_db_before', JSON.stringify({ messageId: String(messageId) }));
+        const updatedDelivered = await Message.findByIdAndUpdate(
+          messageId,
+          { $set: { delivered: true, deliveredAt } },
+          { new: true }
+        ).select('delivered deliveredAt');
+        console.log('message_delivered_db_after', JSON.stringify({
+          messageId: String(messageId),
+          delivered: updatedDelivered?.delivered,
+          deliveredAt: updatedDelivered?.deliveredAt || null,
+        }));
+      }
       const senderSocket = onlineUsers[senderId];
       if (senderSocket) {
         io.to(senderSocket).emit('message-delivered', { messageId, deliveredAt });
@@ -297,7 +311,7 @@ socket.on('private-message', async (data) => {
     console.log('message_read_db_before', JSON.stringify({ messageId: String(messageId) }));
     const updatedRead = await Message.findByIdAndUpdate(
       messageId,
-      { read: true, readAt },
+      { $set: { read: true, readAt } },
       { new: true }
     ).select('read readAt delivered deliveredAt');
     console.log('message_read_db_after', JSON.stringify({
