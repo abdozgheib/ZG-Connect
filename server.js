@@ -11,10 +11,29 @@ const CallLog = require('./models/CallLog');
 const { sendNotification } = require('./notifications');
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+  pingInterval: 10000,
+  pingTimeout: 8000,
+});
 
 // Track online users — declared here so routes can reference it at registration time
 const onlineUsers = {};
+// Hot-path routing for private receipts. Mongo remains the durable source of truth,
+// but live ticks should not wait for a database round trip.
+const privateReceiptRoutes = new Map();
+const readReceiptPreferences = new Map();
+
+function rememberPrivateReceiptRoute(messageId, senderId, receiverId) {
+  const key = String(messageId);
+  privateReceiptRoutes.set(key, {
+    senderId: String(senderId),
+    receiverId: String(receiverId),
+  });
+  if (privateReceiptRoutes.size > 5000) {
+    const oldestKey = privateReceiptRoutes.keys().next().value;
+    if (oldestKey) privateReceiptRoutes.delete(oldestKey);
+  }
+}
 
 function tokenDebugParts(value) {
   const token = String(value || '');
@@ -57,14 +76,74 @@ app.get('/{*path}', (req, res) => {
 });
 
 io.on('connection', (socket) => {
+  const getSocketUserId = () => String(socket.data.userId || (
+    Object.keys(onlineUsers).find(userId => onlineUsers[userId] === socket.id) || ''
+  ));
+
+  async function flushPendingDeliveryReceipts(userId) {
+    const deliveredAt = new Date();
+    const privateMessages = await Message.find({
+      receiver: userId,
+      $or: [{ group: null }, { group: { $exists: false } }],
+      delivered: { $ne: true },
+    }).select('_id sender').sort({ createdAt: -1 }).limit(500);
+
+    for (const message of privateMessages) {
+      const updated = await Message.updateOne(
+        { _id: message._id, delivered: { $ne: true } },
+        { $set: { delivered: true, deliveredAt } }
+      );
+      if (updated.modifiedCount > 0) {
+        io.to(String(message.sender)).emit('message-delivered', {
+          messageId: String(message._id),
+          deliveredAt,
+        });
+      }
+    }
+
+    const groupIds = await Group.find({
+      'members.userId': userId,
+      isDeleted: { $ne: true },
+    }).distinct('_id');
+    if (groupIds.length === 0) return;
+
+    const groupMessages = await Message.find({
+      group: { $in: groupIds },
+      sender: { $ne: userId },
+      deliveredTo: { $not: { $elemMatch: { userId: String(userId) } } },
+    }).select('_id sender group').sort({ createdAt: -1 }).limit(500);
+
+    for (const message of groupMessages) {
+      const updated = await Message.updateOne(
+        { _id: message._id, 'deliveredTo.userId': { $ne: String(userId) } },
+        { $push: { deliveredTo: { userId: String(userId), deliveredAt } } }
+      );
+      if (updated.modifiedCount > 0) {
+        io.to(String(message.sender)).emit('group-message-delivered', {
+          messageId: String(message._id),
+          groupId: String(message.group),
+          userId: String(userId),
+          deliveredAt,
+        });
+      }
+    }
+  }
   console.log('✅ User connected:', socket.id);
 
   socket.on('user-online', async (userId) => {
     if (!userId || userId === 'null' || userId === 'undefined') return;
+    socket.data.userId = String(userId);
     onlineUsers[userId] = socket.id;
     socket.join(String(userId));
-    await User.findByIdAndUpdate(userId, { online: true });
+    const onlineUser = await User.findByIdAndUpdate(userId, { online: true }, { new: true })
+      .select('readReceipts');
+    readReceiptPreferences.set(String(userId), onlineUser?.readReceipts !== false);
     io.emit('online-users', Object.keys(onlineUsers));
+    try {
+      await flushPendingDeliveryReceipts(String(userId));
+    } catch (err) {
+      console.log('pending_delivery_receipt_flush_error', String(err));
+    }
   });
 
   async function relayAvatarUpdateFromSocket(data, source) {
@@ -150,6 +229,7 @@ socket.on('private-message', async (data) => {
       delivered: false
     });
     await message.save();
+    rememberPrivateReceiptRoute(message._id, senderId, receiverId);
 
     // Single tick: server saved the message
     io.to(socket.id).emit('message-sent', { messageId: message._id });
@@ -174,9 +254,8 @@ socket.on('private-message', async (data) => {
         createdAt: message.createdAt
       });
       // Receiver is online → mark delivered in DB immediately before notifying sender
-      const onlineDeliveredAt = new Date();
-      await Message.findByIdAndUpdate(message._id, { delivered: true, deliveredAt: onlineDeliveredAt });
-      io.to(socket.id).emit('message-delivered', { messageId: message._id, deliveredAt: onlineDeliveredAt });
+      // The receiver device confirms delivery with message-delivered. Presence alone is
+      // not proof because an onlineUsers entry can briefly outlive a lost network.
     }
 
     // Send FCM notification (respects messageNotifications setting)
@@ -251,11 +330,61 @@ socket.on('private-message', async (data) => {
     }));
     if (!messageId || !senderId) return;
     try {
-      const existing = await Message.findById(messageId).select('delivered deliveredAt');
-      let deliveredAt;
+      const receiverId = getSocketUserId();
+      const route = privateReceiptRoutes.get(String(messageId));
+      if (route && receiverId && route.receiverId === String(receiverId) && route.senderId === String(senderId)) {
+        const deliveredAt = new Date();
+        const serverRelayedAt = Date.now();
+        io.to(route.senderId).emit('message-delivered', { messageId, deliveredAt, serverRelayedAt });
+        console.log('PRIVATE_DELIVERED_SERVER_RELAY', JSON.stringify({
+          messageId: String(messageId),
+          senderId: route.senderId,
+          receiverId: route.receiverId,
+          deliveredAt,
+          serverRelayedAt,
+          path: 'memory_route',
+        }));
+        setImmediate(async () => {
+          try {
+            await Message.updateOne(
+              { _id: messageId, receiver: receiverId, delivered: { $ne: true } },
+              { $set: { delivered: true, deliveredAt } }
+            );
+          } catch (error) {
+            console.log('server_message_delivered_error', error);
+          }
+        });
+        return;
+      }
+      const existing = await Message.findById(messageId).select('sender receiver delivered deliveredAt');
+      if (!existing || !receiverId || String(existing.receiver) !== String(receiverId)) return;
+      if (String(existing.sender) !== String(senderId)) return;
+      const targetSenderId = String(existing.sender);
+      const deliveredAt = existing.deliveredAt || new Date();
+      const senderSocket = onlineUsers[targetSenderId];
+      if (senderSocket) {
+        const serverRelayedAt = Date.now();
+        io.to(targetSenderId).emit('message-delivered', { messageId, deliveredAt, serverRelayedAt });
+        console.log('PRIVATE_DELIVERED_SERVER_RELAY', JSON.stringify({
+          messageId: String(messageId),
+          senderId: targetSenderId,
+          receiverId: String(receiverId),
+          deliveredAt,
+          serverRelayedAt,
+          path: 'database_fallback',
+        }));
+        console.log('server_message_delivered_relayed', JSON.stringify({
+          messageId: String(messageId), senderId: targetSenderId, senderSocket,
+          persistencePending: !existing.deliveredAt,
+        }));
+      } else {
+        console.log('server_message_delivered_relayed', JSON.stringify({
+          messageId: String(messageId), senderId: targetSenderId, senderSocket: null,
+          skipped: 'sender_offline'
+        }));
+      }
       if (existing?.deliveredAt) {
         // deliveredAt already set — preserve original timestamp, do not overwrite
-        deliveredAt = existing.deliveredAt;
         console.log('message_delivered_db_after', JSON.stringify({
           messageId: String(messageId),
           delivered: existing.delivered,
@@ -264,7 +393,6 @@ socket.on('private-message', async (data) => {
         }));
       } else {
         // First delivery — write to DB
-        deliveredAt = new Date();
         console.log('message_delivered_db_before', JSON.stringify({ messageId: String(messageId) }));
         const updatedDelivered = await Message.findByIdAndUpdate(
           messageId,
@@ -275,22 +403,6 @@ socket.on('private-message', async (data) => {
           messageId: String(messageId),
           delivered: updatedDelivered?.delivered,
           deliveredAt: updatedDelivered?.deliveredAt || null,
-        }));
-      }
-      const senderSocket = onlineUsers[senderId];
-      if (senderSocket) {
-        io.to(senderSocket).emit('message-delivered', { messageId, deliveredAt });
-        console.log('server_message_delivered_relayed', JSON.stringify({
-          messageId: String(messageId),
-          senderId: String(senderId),
-          senderSocket
-        }));
-      } else {
-        console.log('server_message_delivered_relayed', JSON.stringify({
-          messageId: String(messageId),
-          senderId: String(senderId),
-          senderSocket: null,
-          skipped: 'sender_offline'
         }));
       }
     } catch (err) {
@@ -307,11 +419,87 @@ socket.on('private-message', async (data) => {
       readerSocketId: socket.id
     }));
     if (!messageId || !senderId) return;
-    const readAt = new Date();
+    const readerId = getSocketUserId();
+    const route = privateReceiptRoutes.get(String(messageId));
+    if (route && readerId && route.receiverId === String(readerId) && route.senderId === String(senderId)) {
+      const deliveredAt = new Date();
+      const readAt = deliveredAt;
+      const shouldRelayRead = readReceiptPreferences.get(String(readerId)) !== false;
+      const serverRelayedAt = Date.now();
+      if (shouldRelayRead) {
+        io.to(route.senderId).emit('message-read', { messageId, readAt, deliveredAt, serverRelayedAt });
+        console.log('PRIVATE_READ_SERVER_RELAY', JSON.stringify({
+          messageId: String(messageId),
+          senderId: route.senderId,
+          readerId: route.receiverId,
+          readAt,
+          deliveredAt,
+          serverRelayedAt,
+          path: 'memory_route',
+        }));
+      }
+      setImmediate(async () => {
+        try {
+          await Message.updateOne(
+            { _id: messageId, receiver: readerId },
+            { $set: { delivered: true, deliveredAt, read: true, readAt } }
+          );
+        } catch (error) {
+          console.log('server_message_read_error', error);
+        }
+      });
+      return;
+    }
+    const existingMessage = await Message.findById(messageId)
+      .select('sender receiver delivered deliveredAt read readAt');
+    if (!existingMessage || !readerId || String(existingMessage.receiver) !== String(readerId)) return;
+    if (String(existingMessage.sender) !== String(senderId)) return;
+    const targetSenderId = String(existingMessage.sender);
+    const deliveredAt = existingMessage.deliveredAt || new Date();
+    const readAt = existingMessage.readAt || new Date();
+    const reader = await User.findById(readerId).select('readReceipts');
+    const shouldRelayRead = !reader || reader.readReceipts !== false;
+
+    // Relay after identity/message validation, before persistence. The sender UI should not
+    // wait on a Mongo write; the write below remains the durable source of truth.
+    const senderSocket = onlineUsers[targetSenderId];
+    if (shouldRelayRead && senderSocket) {
+      const serverRelayedAt = Date.now();
+      io.to(targetSenderId).emit('message-read', { messageId, readAt, deliveredAt, serverRelayedAt });
+      console.log('PRIVATE_READ_SERVER_RELAY', JSON.stringify({
+        messageId: String(messageId),
+        senderId: targetSenderId,
+        readerId: String(readerId),
+        readAt,
+        deliveredAt,
+        serverRelayedAt,
+        path: 'database_fallback',
+      }));
+      console.log('server_message_read_relayed', JSON.stringify({
+        messageId: String(messageId),
+        senderId: targetSenderId,
+        senderSocket,
+        persistencePending: true,
+      }));
+    } else if (!shouldRelayRead) {
+      console.log('server_message_read_relayed', JSON.stringify({
+        messageId: String(messageId),
+        senderId: targetSenderId,
+        skipped: 'reader_read_receipts_disabled'
+      }));
+    } else {
+      console.log('server_message_read_relayed', JSON.stringify({
+        messageId: String(messageId),
+        senderId: targetSenderId,
+        senderSocket: null,
+        skipped: 'sender_offline'
+      }));
+    }
+
     console.log('message_read_db_before', JSON.stringify({ messageId: String(messageId) }));
     const updatedRead = await Message.findByIdAndUpdate(
       messageId,
-      { $set: { read: true, readAt } },
+      { $set: { delivered: true, deliveredAt, read: true, readAt } },
       { new: true }
     ).select('read readAt delivered deliveredAt');
     console.log('message_read_db_after', JSON.stringify({
@@ -321,35 +509,6 @@ socket.on('private-message', async (data) => {
       delivered: updatedRead?.delivered,
       deliveredAt: updatedRead?.deliveredAt || null,
     }));
-    // Only forward read receipt if the reader has read receipts enabled
-    const readerId = Object.keys(onlineUsers).find(k => onlineUsers[k] === socket.id);
-    if (readerId) {
-      const reader = await User.findById(readerId).select('readReceipts');
-      if (reader && reader.readReceipts === false) {
-        console.log('server_message_read_relayed', JSON.stringify({
-          messageId: String(messageId),
-          senderId: String(senderId),
-          skipped: 'reader_read_receipts_disabled'
-        }));
-        return;
-      }
-    }
-    const senderSocket = onlineUsers[senderId];
-    if (senderSocket) {
-      io.to(senderSocket).emit('message-read', { messageId, readAt });
-      console.log('server_message_read_relayed', JSON.stringify({
-        messageId: String(messageId),
-        senderId: String(senderId),
-        senderSocket
-      }));
-    } else {
-      console.log('server_message_read_relayed', JSON.stringify({
-        messageId: String(messageId),
-        senderId: String(senderId),
-        senderSocket: null,
-        skipped: 'sender_offline'
-      }));
-    }
   });
 
   socket.on('group-message', async (data) => {
@@ -529,33 +688,37 @@ socket.on('private-message', async (data) => {
     if (!groupId || groupId === 'null' || groupId === 'undefined') return;
     if (!userId || userId === 'null' || userId === 'undefined') return;
     try {
+      const receiptUserId = getSocketUserId();
+      if (!receiptUserId || String(receiptUserId) !== String(userId)) return;
       const group = await Group.findById(groupId).select('members');
       if (!group) { console.log('SERVER_GROUP_DELIVERED_NO_GROUP', JSON.stringify({ groupId })); return; }
       const isMember = group.members.some(m => m.userId.toString() === userId.toString());
       if (!isMember) { console.log('SERVER_GROUP_DELIVERED_NOT_MEMBER', JSON.stringify({ groupId, userId })); return; }
-      const msg = await Message.findById(messageId).select('sender deliveredTo');
+      const msg = await Message.findById(messageId).select('sender group deliveredTo');
       if (!msg) { console.log('SERVER_GROUP_DELIVERED_NO_MSG', JSON.stringify({ messageId })); return; }
+      if (String(msg.group) !== String(groupId) || String(msg.sender) === String(userId)) return;
       const senderId = msg.sender.toString();
       const alreadyDelivered = (msg.deliveredTo || []).some(d => String(d.userId) === String(userId));
       console.log('SERVER_GROUP_DELIVERED_STATE', JSON.stringify({ messageId, groupId, userId, senderId, alreadyDelivered, deliveredToCount: (msg.deliveredTo || []).length }));
       if (!alreadyDelivered) {
         const deliveredAt = new Date();
+        const senderSocket = onlineUsers[senderId];
+        console.log('SERVER_GROUP_DELIVERED_SENDER_LOOKUP', JSON.stringify({ senderId, senderSocketId: senderSocket || null, senderOnline: !!senderSocket, onlineUserCount: Object.keys(onlineUsers).length }));
+        if (senderSocket) {
+          io.to(senderId).emit('group-message-delivered', {
+            messageId: String(messageId),
+            groupId: String(groupId),
+            userId: String(userId),
+            deliveredAt,
+          });
+          console.log('SERVER_GROUP_DELIVERED_EMIT_TO_SENDER', JSON.stringify({ messageId, userId, senderId, senderSocket, persistencePending: true }));
+        } else {
+          console.log('SERVER_GROUP_DELIVERED_SENDER_OFFLINE', JSON.stringify({ senderId, messageId }));
+        }
         await Message.findByIdAndUpdate(messageId, {
           $push: { deliveredTo: { userId: String(userId), deliveredAt } }
         });
         console.log('SERVER_GROUP_DELIVERED_SAVED', JSON.stringify({ messageId, userId, senderId }));
-        const senderSocket = onlineUsers[senderId];
-        console.log('SERVER_GROUP_DELIVERED_SENDER_LOOKUP', JSON.stringify({ senderId, senderSocketId: senderSocket || null, senderOnline: !!senderSocket, onlineUserCount: Object.keys(onlineUsers).length }));
-        if (senderSocket) {
-          io.to(senderSocket).emit('group-message-delivered', {
-            messageId: String(messageId),
-            userId: String(userId),
-            deliveredAt,
-          });
-          console.log('SERVER_GROUP_DELIVERED_EMIT_TO_SENDER', JSON.stringify({ messageId, userId, senderId, senderSocket }));
-        } else {
-          console.log('SERVER_GROUP_DELIVERED_SENDER_OFFLINE', JSON.stringify({ senderId, messageId }));
-        }
       } else {
         console.log('SERVER_GROUP_DELIVERED_ALREADY_SAVED', JSON.stringify({ messageId, userId }));
       }
@@ -584,7 +747,12 @@ socket.on('private-message', async (data) => {
       return;
     }
     try {
-      const msg = await Message.findById(messageId).select('sender readBy group');
+      const readerId = getSocketUserId();
+      if (!readerId || String(readerId) !== String(userId)) return;
+      const group = await Group.findById(groupId).select('members');
+      const isMember = group?.members?.some(member => String(member.userId) === String(userId));
+      if (!isMember) return;
+      const msg = await Message.findById(messageId).select('sender readBy deliveredTo group');
       if (!msg) {
         console.log('group_message_read_skip', JSON.stringify({ reason: 'message_not_found', messageId: String(messageId) }));
         return;
@@ -602,26 +770,36 @@ socket.on('private-message', async (data) => {
         return;
       }
       const alreadyRead = (msg.readBy || []).some(r => String(r.userId) === String(userId));
-      if (!alreadyRead) {
+      const alreadyDelivered = (msg.deliveredTo || []).some(d => String(d.userId) === String(userId));
+      if (!alreadyRead || !alreadyDelivered) {
         const readAt = new Date();
+        const deliveredAt = alreadyDelivered
+          ? (msg.deliveredTo || []).find(d => String(d.userId) === String(userId))?.deliveredAt
+          : readAt;
+        const push = {};
+        if (!alreadyRead) push.readBy = { userId: String(userId), readAt };
+        if (!alreadyDelivered) push.deliveredTo = { userId: String(userId), deliveredAt };
+        const senderId = msg.sender.toString();
+        const senderSocket = onlineUsers[senderId];
+        if (senderSocket) {
+          io.to(senderId).emit('group-message-read', {
+            messageId: String(messageId),
+            groupId: String(groupId),
+            userId: String(userId),
+            readAt,
+            deliveredAt,
+          });
+        } else {
+          console.log('group_message_read_skip', JSON.stringify({ reason: 'sender_offline', senderId }));
+        }
         const updatedMsg = await Message.findByIdAndUpdate(messageId, {
-          $push: { readBy: { userId: String(userId), readAt } }
-        }, { new: true }).select('readBy');
+          $push: push,
+        }, { new: true }).select('readBy deliveredTo');
         console.log('group_message_read_db_saved', JSON.stringify({
           messageId: String(messageId),
           userId: String(userId),
           readByLength: (updatedMsg?.readBy || []).length,
         }));
-        const senderSocket = onlineUsers[msg.sender.toString()];
-        if (senderSocket) {
-          io.to(senderSocket).emit('group-message-read', {
-            messageId: String(messageId),
-            userId: String(userId),
-            readAt,
-          });
-        } else {
-          console.log('group_message_read_skip', JSON.stringify({ reason: 'sender_offline', senderId: msg.sender.toString() }));
-        }
       } else {
         console.log('group_message_read_skipped', JSON.stringify({
           messageId: String(messageId),
@@ -644,26 +822,22 @@ socket.on('private-message', async (data) => {
     }));
     if (!messageId || !senderId) return;
     try {
-      const msg = await Message.findById(messageId).select('sender playedBy');
+      const playerId = getSocketUserId();
+      const msg = await Message.findById(messageId).select('sender receiver playedBy');
       if (!msg) return;
-      const playerId = Object.keys(onlineUsers).find(k => onlineUsers[k] === socket.id) || '';
+      if (!playerId || String(msg.receiver) !== String(playerId)) return;
+      if (String(msg.sender) !== String(senderId)) return;
       const alreadyPlayed = (msg.playedBy || []).some(p => String(p.userId) === String(playerId));
       if (!alreadyPlayed && playerId) {
         const playedAt = new Date();
-        await Message.findByIdAndUpdate(messageId, {
-          $push: { playedBy: { userId: String(playerId), playedAt } }
-        });
-        console.log('message_played_db_saved', JSON.stringify({
-          messageId: String(messageId),
-          playerId: String(playerId),
-          playedAt,
-        }));
-        const senderSocket = onlineUsers[String(senderId)];
+        const targetSenderId = String(msg.sender);
+        const senderSocket = onlineUsers[targetSenderId];
         if (senderSocket) {
-          io.to(senderSocket).emit('message-played', { messageId: String(messageId), playedAt });
+          io.to(targetSenderId).emit('message-played', { messageId: String(messageId), playedAt });
           console.log('message_played_relayed', JSON.stringify({
             messageId: String(messageId),
             senderSocket,
+            persistencePending: true,
           }));
         } else {
           console.log('message_played_relayed', JSON.stringify({
@@ -672,6 +846,14 @@ socket.on('private-message', async (data) => {
             skipped: 'sender_offline',
           }));
         }
+        await Message.findByIdAndUpdate(messageId, {
+          $push: { playedBy: { userId: String(playerId), playedAt } }
+        });
+        console.log('message_played_db_saved', JSON.stringify({
+          messageId: String(messageId),
+          playerId: String(playerId),
+          playedAt,
+        }));
       } else {
         console.log('message_played_skipped', JSON.stringify({
           messageId: String(messageId),
@@ -704,6 +886,11 @@ socket.on('private-message', async (data) => {
       return;
     }
     try {
+      const playerId = getSocketUserId();
+      if (!playerId || String(playerId) !== String(userId)) return;
+      const group = await Group.findById(groupId).select('members');
+      const isMember = group?.members?.some(member => String(member.userId) === String(userId));
+      if (!isMember) return;
       const msg = await Message.findById(messageId).select('sender playedBy group');
       if (!msg) {
         console.log('group_message_played_skip', JSON.stringify({ reason: 'message_not_found', messageId: String(messageId) }));
@@ -724,6 +911,18 @@ socket.on('private-message', async (data) => {
       const alreadyPlayed = (msg.playedBy || []).some(p => String(p.userId) === String(userId));
       if (!alreadyPlayed) {
         const playedAt = new Date();
+        const senderId = msg.sender.toString();
+        const senderSocket = onlineUsers[senderId];
+        if (senderSocket) {
+          io.to(senderId).emit('group-message-played', {
+            messageId: String(messageId),
+            groupId: String(groupId),
+            userId: String(userId),
+            playedAt,
+          });
+        } else {
+          console.log('group_message_played_skip', JSON.stringify({ reason: 'sender_offline', senderId }));
+        }
         const updatedMsg = await Message.findByIdAndUpdate(messageId, {
           $push: { playedBy: { userId: String(userId), playedAt } }
         }, { new: true }).select('playedBy');
@@ -732,16 +931,6 @@ socket.on('private-message', async (data) => {
           userId: String(userId),
           playedByLength: (updatedMsg?.playedBy || []).length,
         }));
-        const senderSocket = onlineUsers[msg.sender.toString()];
-        if (senderSocket) {
-          io.to(senderSocket).emit('group-message-played', {
-            messageId: String(messageId),
-            userId: String(userId),
-            playedAt,
-          });
-        } else {
-          console.log('group_message_played_skip', JSON.stringify({ reason: 'sender_offline', senderId: msg.sender.toString() }));
-        }
       } else {
         console.log('group_message_played_skipped', JSON.stringify({
           messageId: String(messageId),
@@ -1138,8 +1327,8 @@ socket.on('private-message', async (data) => {
   });
 
   socket.on('disconnect', async () => {
-    const userId = Object.keys(onlineUsers).find(k => onlineUsers[k] === socket.id);
-    if (userId) {
+    const userId = String(socket.data.userId || Object.keys(onlineUsers).find(k => onlineUsers[k] === socket.id) || '');
+    if (userId && onlineUsers[userId] === socket.id) {
       delete onlineUsers[userId];
       const lastSeen = Date.now();
       await User.findByIdAndUpdate(userId, { online: false, lastSeen });
