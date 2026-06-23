@@ -146,6 +146,38 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('user-background', (userId) => {
+    const normalizedUserId = String(userId || '').trim();
+    if (!normalizedUserId || normalizedUserId === 'null' || normalizedUserId === 'undefined') return;
+    socket.data.userId = normalizedUserId;
+    socket.join(normalizedUserId);
+    console.log('BACKGROUND_SOCKET_IDENTIFIED', JSON.stringify({ userId: normalizedUserId, socketId: socket.id }));
+  });
+
+  socket.on('user-offline', async (data) => {
+    const requestedUserId = String(data?.userId || data || '').trim();
+    const socketUserId = getSocketUserId();
+    if (!requestedUserId || !socketUserId || requestedUserId !== socketUserId) return;
+    if (onlineUsers[requestedUserId] === socket.id) {
+      delete onlineUsers[requestedUserId];
+    }
+    const lastSeen = new Date();
+    try {
+      await User.findByIdAndUpdate(requestedUserId, { online: false, lastSeen });
+      const payload = { userId: requestedUserId, lastSeen: lastSeen.toISOString() };
+      io.emit('user-offline', payload);
+      io.emit('user-last-seen', payload);
+      io.emit('online-users', Object.keys(onlineUsers));
+      console.log('PRESENCE_BACKGROUND_OFFLINE_APPLIED', JSON.stringify({
+        userId: requestedUserId,
+        lastSeen: payload.lastSeen,
+        socketId: socket.id,
+      }));
+    } catch (err) {
+      console.log('PRESENCE_BACKGROUND_OFFLINE_ERROR', String(err));
+    }
+  });
+
   async function relayAvatarUpdateFromSocket(data, source) {
     const userId = String(data?.userId || data?._id || '').trim();
     const avatarUrl = String(data?.avatarUrl || data?.avatar || '').trim();
@@ -574,7 +606,20 @@ socket.on('private-message', async (data) => {
             m.userId.fcmToken,
             `${senderName} in ${groupName}`,
             preview,
-            { type: 'group_message', groupId: groupId.toString(), groupName, senderName, senderId: senderId.toString(), messageId: message._id.toString() }
+            {
+              type: 'group_message',
+              groupId: groupId.toString(),
+              groupName,
+              senderName,
+              senderId: senderId.toString(),
+              messageId: message._id.toString(),
+              content: preview,
+              contentPreview: preview,
+              contentIsPreview: 'true',
+              createdAt: message.createdAt.toISOString(),
+              notif_title: `${senderName} in ${groupName}`,
+              notif_body: preview,
+            }
           ));
         await Promise.allSettled(notifPromises);
       }
