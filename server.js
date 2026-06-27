@@ -1494,6 +1494,38 @@ socket.on('private-message', async (data) => {
   });
 
   // Camera on/off — relay to the other peer so they can show a placeholder
+  socket.on('call-ice-restart-offer', (data = {}) => {
+    const targetUserId = String(data?.targetUserId || '');
+    const targetSocket = onlineUsers[targetUserId];
+    console.log('Forwarding ICE restart offer to:', targetUserId, 'callId:', data?.callId || null);
+    if (targetSocket) {
+      io.to(targetSocket).emit('call-ice-restart-offer', {
+        callId: data.callId,
+        offer: data.offer,
+        fromUserId: data.fromUserId || socket.data.userId || null,
+      });
+      console.log('ICE restart offer forwarded successfully');
+    } else {
+      console.log('ICE restart offer target user not found:', targetUserId);
+    }
+  });
+
+  socket.on('call-ice-restart-answer', (data = {}) => {
+    const targetUserId = String(data?.targetUserId || '');
+    const targetSocket = onlineUsers[targetUserId];
+    console.log('Forwarding ICE restart answer to:', targetUserId, 'callId:', data?.callId || null);
+    if (targetSocket) {
+      io.to(targetSocket).emit('call-ice-restart-answer', {
+        callId: data.callId,
+        answer: data.answer,
+        fromUserId: data.fromUserId || socket.data.userId || null,
+      });
+      console.log('ICE restart answer forwarded successfully');
+    } else {
+      console.log('ICE restart answer target user not found:', targetUserId);
+    }
+  });
+
   socket.on('camera-toggle', (data) => {
     const { targetUserId, cameraOff } = data;
     const targetSocket = onlineUsers[targetUserId];
