@@ -1418,10 +1418,22 @@ socket.on('private-message', async (data) => {
 
   // Call end
   socket.on('call-end', async (data) => {
-    const { targetUserId } = data;
+    const targetUserId = String(data?.targetUserId || '');
+    const payload = {
+      callId: data?.callId ? String(data.callId) : '',
+      callerId: data?.callerId ? String(data.callerId) : String(socket.data.userId || ''),
+      receiverId: data?.receiverId ? String(data.receiverId) : targetUserId,
+      targetUserId,
+      callType: data?.callType ? String(data.callType) : 'voice',
+      reason: data?.reason ? String(data.reason) : 'remote_hangup',
+    };
+    console.log('server_call_end_received', payload);
     const targetSocket = onlineUsers[targetUserId];
     if (targetSocket) {
-      io.to(targetSocket).emit('call-ended');
+      io.to(targetSocket).emit('call-ended', payload);
+      console.log('server_call_end_relayed', { ...payload, targetSocket });
+    } else {
+      console.log('server_call_end_target_not_found', payload);
     }
 
     // If the call log is still 'missed' (never answered), notify receiver
