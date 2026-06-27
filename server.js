@@ -1166,7 +1166,7 @@ socket.on('private-message', async (data) => {
   // Call offer - caller sends to receiver
   socket.on('call-offer', async (data) => {
     const { callerId, callerName, callerAvatar, targetUserId, offer, callType, callId } = data;
-    const targetSocket = onlineUsers[targetUserId];
+    const targetSocket = onlineUsers[String(targetUserId)];
     const clientCallerAvatar = typeof callerAvatar === 'string' ? callerAvatar.trim() : '';
     let resolvedCallerName = callerName;
     let resolvedCallerAvatar = clientCallerAvatar;
@@ -1177,6 +1177,35 @@ socket.on('private-message', async (data) => {
       hasMobileCallerAvatar: !!clientCallerAvatar,
       mobileCallerAvatarLength: clientCallerAvatar.length,
     });
+
+    // Deliver the live call offer immediately. Avatar/name enrichment and FCM happen after this.
+    if (targetSocket) {
+      const socketPayload = {
+        callId,
+        callerId,
+        callerName: resolvedCallerName,
+        callerAvatar: resolvedCallerAvatar || '',
+        receiverId: String(targetUserId),
+        targetUserId: String(targetUserId),
+        offer: typeof offer === 'string' ? offer : JSON.stringify(offer),
+        callType: callType || 'voice',
+      };
+      console.log('backend_incoming_call_socket_emit_immediate', {
+        callId,
+        callerId,
+        targetUserId,
+        targetSocket,
+        callType: socketPayload.callType,
+      });
+      io.to(targetSocket).emit('incoming-call', socketPayload);
+    } else {
+      console.log('backend_incoming_call_socket_target_offline', {
+        callId,
+        callerId,
+        targetUserId,
+      });
+    }
+
     try {
       const caller = callerId ? await User.findById(callerId).select('name avatar profileImage profilePhoto image photo') : null;
       if (caller) {
@@ -1200,28 +1229,6 @@ socket.on('private-message', async (data) => {
       });
     } catch (e) {
       console.log('native_incoming_avatar_backend_resolve_failed', e.message);
-    }
-
-    // If receiver is online, deliver via socket immediately
-    if (targetSocket) {
-      const socketPayload = {
-        callId,
-        callerId,
-        callerName: resolvedCallerName,
-        callerAvatar: resolvedCallerAvatar || '',
-        receiverId: String(targetUserId),
-        targetUserId: String(targetUserId),
-        offer: typeof offer === 'string' ? offer : JSON.stringify(offer),
-        callType: callType || 'voice',
-      };
-      console.log('backend_incoming_call_socket_avatar_sent', {
-        callId,
-        callerId,
-        targetUserId,
-        hasCallerAvatar: !!socketPayload.callerAvatar,
-        callerAvatarLength: String(socketPayload.callerAvatar || '').length,
-      });
-      io.to(targetSocket).emit('incoming-call', socketPayload);
     }
 
     // Do not mark the caller as Ringing here. Ringing is receiver-acknowledged via receiver-ringing or native HTTP ACK below.
