@@ -22,6 +22,44 @@ const onlineUsers = {};
 // but live ticks should not wait for a database round trip.
 const privateReceiptRoutes = new Map();
 const readReceiptPreferences = new Map();
+const ringingAckCallIds = new Set();
+
+function claimRingingAck(callId) {
+  const key = String(callId || '');
+  if (!key) return false;
+  if (ringingAckCallIds.has(key)) return false;
+  ringingAckCallIds.add(key);
+  if (ringingAckCallIds.size > 5000) {
+    const oldestKey = ringingAckCallIds.keys().next().value;
+    if (oldestKey) ringingAckCallIds.delete(oldestKey);
+  }
+  return true;
+}
+
+function relayRingingAck(data = {}, source = 'unknown') {
+  const callId = data && data.callId ? String(data.callId) : '';
+  const callerId = data && data.callerId ? String(data.callerId) : '';
+  const receiverId = data && data.receiverId ? String(data.receiverId) : '';
+  const callType = data && data.callType ? String(data.callType) : 'voice';
+  console.log('SERVER_RINGING_ACK_RECEIVED', { callId, callerId, receiverId, callType, source });
+  if (!callId || !callerId) {
+    console.log('SERVER_RINGING_ACK_FAILED', { callId, callerId, receiverId, reason: 'missing_required_payload', source });
+    return { ok: false, reason: 'missing_required_payload' };
+  }
+  if (!claimRingingAck(callId)) {
+    console.log('SERVER_RINGING_ACK_DUPLICATE_SKIPPED', { callId, callerId, receiverId, source });
+    return { ok: true, duplicate: true };
+  }
+  const callerSocket = onlineUsers[callerId];
+  if (!callerSocket) {
+    console.log('SERVER_RINGING_ACK_FAILED', { callId, callerId, receiverId, reason: 'caller_socket_not_found', source });
+    return { ok: false, reason: 'caller_socket_not_found' };
+  }
+  io.to(callerSocket).emit('call-ringing', { callId, callerId, receiverId, callType });
+  console.log('SERVER_RINGING_ACK_RELAYED', { callId, callerId, receiverId, callerSocket, callType, source });
+  return { ok: true };
+}
+
 
 function rememberPrivateReceiptRoute(messageId, senderId, receiverId) {
   const key = String(messageId);
@@ -54,6 +92,11 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/chat', require('./routes/chat')(io, onlineUsers));
 app.use('/api/contacts', require('./routes/contacts')(io, onlineUsers));
 app.use('/api/profile', require('./routes/profile')(io, onlineUsers));
+app.post('/api/calls/ringing-ack', (req, res) => {
+  const result = relayRingingAck(req.body || {}, 'native_http_ringing_ack');
+  res.status(result.ok ? 200 : 400).json(result);
+});
+
 app.use('/api/calls', require('./routes/calls'));
 
 app.post('/api/calls/decline', async (req, res) => {
@@ -231,7 +274,7 @@ io.on('connection', (socket) => {
   });
 
 socket.on('private-message', async (data) => {
-    const { senderId, receiverId, content, senderName, replyTo } = data;
+    const { senderId, receiverId, content, senderName, replyTo, forwarded } = data;
 
     if (!senderId || !receiverId || !content) {
       console.log('Invalid message data:', data);
@@ -258,6 +301,8 @@ socket.on('private-message', async (data) => {
       receiver: receiverId,
       content,
       replyTo: replyTo || null,
+      forwarded: !!forwarded || String(content || '').includes('[forwarded]'),
+      forwardedCount: forwarded ? 1 : 0,
       delivered: false
     });
     await message.save();
@@ -273,6 +318,7 @@ socket.on('private-message', async (data) => {
         senderName,
         receiverId,
         content,
+        forwarded: !!message.forwarded,
         replyTo: replyTo || null,
         messageId: message._id,
         createdAt: message.createdAt
@@ -544,7 +590,7 @@ socket.on('private-message', async (data) => {
   });
 
   socket.on('group-message', async (data) => {
-    const { senderId, groupId, content, senderName, groupName, replyTo } = data;
+    const { senderId, groupId, content, senderName, groupName, replyTo, forwarded } = data;
     if (!senderId || senderId === 'null' || senderId === 'undefined') {
       console.log('Invalid senderId in group-message:', senderId);
       return;
@@ -570,7 +616,7 @@ socket.on('private-message', async (data) => {
       return;
     }
     const activeOtherCount = group.members.filter(m => m.userId.toString() !== senderId.toString()).length;
-    const message = new Message({ sender: senderId, group: groupId, content, replyTo: replyTo || null });
+    const message = new Message({ sender: senderId, group: groupId, content, replyTo: replyTo || null, forwarded: !!forwarded || String(content || '').includes('[forwarded]'), forwardedCount: forwarded ? 1 : 0 });
     await message.save();
     // Echo real _id + activeOtherCount back to sender for tick tracking
     socket.emit('group-message-sent', {
@@ -584,6 +630,7 @@ socket.on('private-message', async (data) => {
       senderName,
       groupId,
       content,
+      forwarded: !!message.forwarded,
       messageId: message._id,
       replyTo: replyTo || null,
       createdAt: message.createdAt,
@@ -637,8 +684,8 @@ socket.on('private-message', async (data) => {
     socket.emit('update-chat-preview', data);
   });
 
-  socket.on('message-reaction', (data) => {
-    const { messageId, reaction, userId, receiverId } = data;
+  socket.on('message-reaction', async (data) => {
+    const { messageId, reaction, userId, receiverId, action } = data;
     if (!messageId || messageId === 'null' || messageId === 'undefined') {
       console.log('Invalid messageId in message-reaction:', messageId);
       return;
@@ -648,22 +695,57 @@ socket.on('private-message', async (data) => {
       return;
     }
 
-    Message.findByIdAndUpdate(
-      messageId,
-      { $push: { reactions: { userId, emoji: reaction } } },
-      { new: true }
-    ).catch(err => console.log(err));
+    try {
+      const msg = await Message.findById(messageId, { reactions: 1 });
+      if (!msg) return;
+      const existing = (msg.reactions || []).find(r => String(r.userId) === String(userId));
+      const nextAction = action === 'remove' || (existing && existing.emoji === reaction) ? 'remove' : 'set';
+      await Message.findByIdAndUpdate(messageId, { $pull: { reactions: { userId: String(userId) } } });
+      if (nextAction !== 'remove') {
+        await Message.findByIdAndUpdate(messageId, { $push: { reactions: { userId: String(userId), emoji: reaction } } });
+      }
 
-    const receiverSocket = onlineUsers[receiverId];
-    if (receiverSocket) {
-      io.to(receiverSocket).emit('message-reaction', {
-        messageId,
-        reaction,
-        userId,
-      });
+      const payload = { messageId, reaction, emoji: reaction, userId, action: nextAction };
+      const receiverSocket = onlineUsers[receiverId];
+      if (receiverSocket) io.to(receiverSocket).emit('message-reaction', payload);
+      socket.emit('message-reaction', payload);
+    } catch (err) {
+      console.log('message-reaction error:', err);
+    }
+  });
+  socket.on('message-edit', async (data) => {
+    const { messageId, senderId, receiverId, content } = data || {};
+    if (!messageId || !senderId || !receiverId || typeof content !== 'string' || !content.trim()) return;
+    try {
+      const editedAt = new Date();
+      const msg = await Message.findOneAndUpdate(
+        { _id: messageId, sender: senderId },
+        { content: content.trim(), edited: true, editedAt },
+        { new: true }
+      );
+      if (!msg) return;
+      const payload = { messageId: String(messageId), senderId: String(senderId), receiverId: String(receiverId), content: msg.content, edited: true, editedAt };
+      const receiverSocket = onlineUsers[String(receiverId)];
+      if (receiverSocket) io.to(receiverSocket).emit('message-edited', payload);
+      socket.emit('message-edited', payload);
+    } catch (err) {
+      console.log('message-edit error:', err);
     }
   });
 
+  socket.on('message-poll-vote', async (data) => {
+    const { messageId, userId, receiverId, options } = data || {};
+    if (!messageId || !userId || !Array.isArray(options)) return;
+    try {
+      const safeOptions = options.map(String).filter(Boolean);
+      await Message.findByIdAndUpdate(messageId, { [`pollVotes.${String(userId)}`]: safeOptions });
+      const payload = { messageId: String(messageId), userId: String(userId), receiverId: receiverId ? String(receiverId) : '', options: safeOptions };
+      if (receiverId && onlineUsers[String(receiverId)]) io.to(onlineUsers[String(receiverId)]).emit('message-poll-vote', payload);
+      socket.emit('message-poll-vote', payload);
+    } catch (err) {
+      console.log('message-poll-vote error:', err);
+    }
+  });
   socket.on('message-deleted', (data) => {
     const { messageId, senderId, receiverId } = data || {};
     if (!messageId || messageId === 'null' || messageId === 'undefined') {
@@ -726,6 +808,34 @@ socket.on('private-message', async (data) => {
     }
   });
 
+  socket.on('group-message-edit', async (data) => {
+    const { messageId, senderId, groupId, content } = data || {};
+    if (!messageId || !senderId || !groupId || typeof content !== 'string' || !content.trim()) return;
+    try {
+      const editedAt = new Date();
+      const msg = await Message.findOneAndUpdate(
+        { _id: messageId, sender: senderId, group: groupId },
+        { content: content.trim(), edited: true, editedAt },
+        { new: true }
+      );
+      if (!msg) return;
+      io.to(String(groupId)).emit('group-message-edited', { messageId: String(messageId), senderId: String(senderId), groupId: String(groupId), content: msg.content, edited: true, editedAt });
+    } catch (err) {
+      console.log('group-message-edit error:', err);
+    }
+  });
+
+  socket.on('group-message-poll-vote', async (data) => {
+    const { messageId, userId, groupId, options } = data || {};
+    if (!messageId || !userId || !groupId || !Array.isArray(options)) return;
+    try {
+      const safeOptions = options.map(String).filter(Boolean);
+      await Message.findByIdAndUpdate(messageId, { [`pollVotes.${String(userId)}`]: safeOptions });
+      io.to(String(groupId)).emit('group-message-poll-vote', { messageId: String(messageId), userId: String(userId), groupId: String(groupId), options: safeOptions });
+    } catch (err) {
+      console.log('group-message-poll-vote error:', err);
+    }
+  });
   socket.on('group-message-delivered', async (data) => {
     const { messageId, groupId, userId } = data || {};
     console.log('SERVER_GROUP_DELIVERED_RECEIVED', JSON.stringify({ messageId, groupId, userId, validMessageId: !!(messageId && messageId !== 'null' && messageId !== 'undefined') }));
@@ -1099,6 +1209,8 @@ socket.on('private-message', async (data) => {
         callerId,
         callerName: resolvedCallerName,
         callerAvatar: resolvedCallerAvatar || '',
+        receiverId: String(targetUserId),
+        targetUserId: String(targetUserId),
         offer: typeof offer === 'string' ? offer : JSON.stringify(offer),
         callType: callType || 'voice',
       };
@@ -1112,8 +1224,7 @@ socket.on('private-message', async (data) => {
       io.to(targetSocket).emit('incoming-call', socketPayload);
     }
 
-    // Always tell the caller that the ring was sent (even if receiver is offline — FCM covers it)
-    socket.emit('call-ringing', {});
+    // Do not mark the caller as Ringing here. Ringing is receiver-acknowledged via receiver-ringing or native HTTP ACK below.
 
     // Send FCM for background/killed receiver (respects callNotifications setting)
     try {
@@ -1126,6 +1237,8 @@ socket.on('private-message', async (data) => {
           callerId: String(callerId),
           callerName: String(resolvedCallerName || 'Unknown'),
           callerAvatar: String(resolvedCallerAvatar || ''),
+          receiverId: String(targetUserId),
+          targetUserId: String(targetUserId),
           offer: typeof offer === 'string' ? offer : JSON.stringify(offer),
           callType: String(callType || 'voice'),
         };
@@ -1172,6 +1285,9 @@ socket.on('private-message', async (data) => {
     }
   });
 
+  socket.on('receiver-ringing', (data = {}) => {
+    relayRingingAck(data, 'socket_receiver_ringing');
+  });
   // Receiver accepted — relay to caller so they join Stream
   async function relayCallCancel(eventName, data) {
     console.log('server_call_cancel_received', {
@@ -1355,10 +1471,25 @@ socket.on('private-message', async (data) => {
 
   // ICE candidate exchange
   socket.on('call-ice-candidate', (data) => {
-    const { candidate, targetUserId } = data;
+    const { candidate, callId, callType, fromUserId } = data;
+    const targetUserId = String(data?.targetUserId || '');
+    console.log(
+      'Forwarding ICE candidate to:',
+      targetUserId,
+      'type:',
+      candidate?.type || String(candidate?.candidate || '').match(/\btyp\s+([a-z0-9]+)/i)?.[1] || null
+    );
     const targetSocket = onlineUsers[targetUserId];
     if (targetSocket) {
-      io.to(targetSocket).emit('call-ice-candidate', { candidate });
+      io.to(targetSocket).emit('call-ice-candidate', {
+        candidate,
+        callId,
+        callType,
+        fromUserId: fromUserId || socket.data.userId || null,
+      });
+      console.log('ICE candidate forwarded successfully');
+    } else {
+      console.log('Target user not found:', targetUserId);
     }
   });
 
@@ -1389,3 +1520,6 @@ setInterval(() => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
+
+
