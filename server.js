@@ -474,6 +474,11 @@ io.on('connection', (socket) => {
   }
 
   socket.on('user-online', async (userId) => {
+    console.log('PRESENCE_USER_ONLINE_RECEIVED', JSON.stringify({
+      userId: userId ? String(userId) : null,
+      socketId: socket.id,
+      at: new Date().toISOString(),
+    }));
     if (!userId || userId === 'null' || userId === 'undefined') return;
     socket.data.userId = String(userId);
     onlineUsers[userId] = socket.id;
@@ -481,6 +486,13 @@ io.on('connection', (socket) => {
     const onlineUser = await User.findByIdAndUpdate(userId, { online: true }, { new: true })
       .select('readReceipts');
     readReceiptPreferences.set(String(userId), onlineUser?.readReceipts !== false);
+    console.log('PRESENCE_BROADCAST_ONLINE_USERS', JSON.stringify({
+      reason: 'user-online',
+      userId: String(userId),
+      socketId: socket.id,
+      onlineUsers: Object.keys(onlineUsers),
+      at: new Date().toISOString(),
+    }));
     io.emit('online-users', Object.keys(onlineUsers));
     try {
       await flushPendingDeliveryReceipts(String(userId));
@@ -515,6 +527,13 @@ io.on('connection', (socket) => {
       const payload = { userId: requestedUserId, lastSeen: lastSeen.toISOString() };
       io.emit('user-offline', payload);
       io.emit('user-last-seen', payload);
+      console.log('PRESENCE_BROADCAST_ONLINE_USERS', JSON.stringify({
+        reason: 'user-offline',
+        userId: requestedUserId,
+        socketId: socket.id,
+        onlineUsers: Object.keys(onlineUsers),
+        at: new Date().toISOString(),
+      }));
       io.emit('online-users', Object.keys(onlineUsers));
       console.log('PRESENCE_BACKGROUND_OFFLINE_APPLIED', JSON.stringify({
         userId: requestedUserId,
@@ -2049,6 +2068,13 @@ socket.on('private-message', async (data) => {
       const lastSeen = Date.now();
       await User.findByIdAndUpdate(userId, { online: false, lastSeen });
       io.emit('user-last-seen', { userId, lastSeen });
+      console.log('PRESENCE_BROADCAST_ONLINE_USERS', JSON.stringify({
+        reason: 'disconnect',
+        userId,
+        socketId: socket.id,
+        onlineUsers: Object.keys(onlineUsers),
+        at: new Date().toISOString(),
+      }));
       io.emit('online-users', Object.keys(onlineUsers));
     }
   });
