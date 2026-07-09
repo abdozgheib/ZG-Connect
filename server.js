@@ -246,6 +246,7 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/chat', require('./routes/chat')(io, onlineUsers));
 app.use('/api/contacts', require('./routes/contacts')(io, onlineUsers));
 app.use('/api/profile', require('./routes/profile')(io, onlineUsers));
+app.use('/api/backup', require('./routes/backup'));
 app.post('/api/calls/ringing-ack', (req, res) => {
   const result = relayRingingAck(req.body || {}, 'native_http_ringing_ack');
   res.status(result.ok ? 200 : 400).json(result);
