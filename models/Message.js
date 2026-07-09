@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+﻿const mongoose = require('mongoose');
 
 const messageSchema = new mongoose.Schema({
   sender: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -10,6 +10,13 @@ const messageSchema = new mongoose.Schema({
   readAt: { type: Date },
   deleted: { type: Boolean, default: false },
   deletedFor: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  forwarded: { type: Boolean, default: false },
+  forwardedCount: { type: Number, default: 0 },
+  starredBy: [{ type: String }],
+  pinnedBy: [{ type: String }],
+  edited: { type: Boolean, default: false },
+  editedAt: { type: Date },
+  pollVotes: { type: Map, of: [String], default: {} },
   replyTo: {
     _id: String,
     content: String,

@@ -5,6 +5,7 @@ const { Server } = require('socket.io');
 const mongoose = require('mongoose');
 const path = require('path');
 const Message = require('./models/Message');
+const TempMessageQueue = require('./models/TempMessageQueue');
 const User = require('./models/User');
 const Group = require('./models/Group');
 const CallLog = require('./models/CallLog');
@@ -16,13 +17,166 @@ const io = new Server(server, {
   pingTimeout: 8000,
 });
 
-// Track online users — declared here so routes can reference it at registration time
+// Track online users â€” declared here so routes can reference it at registration time
 const onlineUsers = {};
 // Hot-path routing for private receipts. Mongo remains the durable source of truth,
 // but live ticks should not wait for a database round trip.
 const privateReceiptRoutes = new Map();
 const readReceiptPreferences = new Map();
 const ringingAckCallIds = new Set();
+// Local-only relay flags. Existing history endpoints remain available; new Message writes are skipped when temp queue is enabled.
+const USE_TEMP_QUEUE = process.env.USE_TEMP_QUEUE !== 'false'; // default true for local-only relay mode
+const USE_LOCAL_HISTORY = process.env.USE_LOCAL_HISTORY !== 'false'; // default true
+const TEMP_QUEUE_COMPAT_MODE = true;
+const STOP_PERMANENT_MESSAGE_WRITES = USE_TEMP_QUEUE;
+const TEMP_QUEUE_TTL_MS = Number(process.env.TEMP_QUEUE_TTL_MS || 7 * 24 * 60 * 60 * 1000);
+
+function tempQueueMessageType(content) {
+  const raw = String(content || '');
+  if (raw.includes('[image]')) return 'image';
+  if (raw.includes('[audio]')) return 'audio';
+  if (raw.includes('[video]')) return 'video';
+  if (raw.includes('[document]') || raw.includes('[file]')) return 'document';
+  return 'text';
+}
+
+function tempQueueClientMessageId(data, message) {
+  return String(data?.clientMessageId || data?.temporaryId || data?.tempId || message?._id || '');
+}
+
+function createRelayMessage({ senderId, receiverId, groupId, content, replyTo, forwarded }) {
+  const now = new Date();
+  return {
+    _id: new mongoose.Types.ObjectId(),
+    sender: senderId,
+    receiver: receiverId,
+    group: groupId,
+    content,
+    replyTo: replyTo || null,
+    forwarded: !!forwarded || String(content || '').includes('[forwarded]'),
+    forwardedCount: forwarded ? 1 : 0,
+    delivered: false,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+async function createTempQueueItem({ scope, data, message, senderId, receiverId, groupId, recipients }) {
+  try {
+    if (!TEMP_QUEUE_COMPAT_MODE || !message?._id) return null;
+    const clientMessageId = tempQueueClientMessageId(data, message);
+    const recipientIds = (recipients || (receiverId ? [receiverId] : []))
+      .map(id => String(id || ''))
+      .filter(Boolean)
+      .filter(id => id !== String(senderId));
+    const expiresAt = new Date(Date.now() + TEMP_QUEUE_TTL_MS);
+    const queueItem = await TempMessageQueue.findOneAndUpdate(
+      { scope, clientMessageId },
+      {
+        $setOnInsert: {
+          clientMessageId,
+          messageId: message._id,
+          scope,
+          sender: senderId,
+          receiver: receiverId || undefined,
+          group: groupId || undefined,
+          content: String(message.content || data?.content || ''),
+          messageType: tempQueueMessageType(message.content || data?.content),
+          recipients: recipientIds.map(userId => ({ userId, delivered: false })),
+          delivered: recipientIds.length === 0,
+          deliveredAt: recipientIds.length === 0 ? new Date() : undefined,
+          expiresAt,
+        }
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    console.log('TEMP_QUEUE_CREATED', JSON.stringify({
+      queueId: String(queueItem._id),
+      messageId: String(message._id),
+      clientMessageId,
+      scope,
+      recipientCount: recipientIds.length,
+      useTempQueue: USE_TEMP_QUEUE,
+      useLocalHistory: USE_LOCAL_HISTORY,
+    }));
+    return queueItem;
+  } catch (err) {
+    console.log('TEMP_QUEUE_CREATED', JSON.stringify({ ok: false, error: err?.message || String(err) }));
+    return null;
+  }
+}
+
+async function ackTempQueueDelivery({ scope, messageId, clientMessageId, userId, groupId }) {
+  try {
+    const query = { scope };
+    if (messageId) query.messageId = messageId;
+    else if (clientMessageId) query.clientMessageId = String(clientMessageId);
+    else return null;
+    if (groupId) query.group = groupId;
+    const item = await TempMessageQueue.findOne(query);
+    if (!item) {
+      console.log('TEMP_QUEUE_ACK', JSON.stringify({ scope, messageId: messageId ? String(messageId) : null, clientMessageId: clientMessageId || null, userId: String(userId || ''), found: false }));
+      return null;
+    }
+    const deliveredAt = new Date();
+    let allDelivered = false;
+    if (scope === 'group') {
+      let touched = false;
+      item.recipients = (item.recipients || []).map(recipient => {
+        if (String(recipient.userId) === String(userId)) {
+          touched = true;
+          return { userId: recipient.userId, delivered: true, deliveredAt: recipient.deliveredAt || deliveredAt };
+        }
+        return recipient;
+      });
+      allDelivered = (item.recipients || []).every(recipient => recipient.delivered);
+      if (allDelivered) {
+        item.delivered = true;
+        item.deliveredAt = item.deliveredAt || deliveredAt;
+      }
+      await item.save();
+      console.log('TEMP_QUEUE_ACK', JSON.stringify({ queueId: String(item._id), scope, messageId: String(item.messageId), userId: String(userId || ''), touched, allDelivered }));
+    } else {
+      item.recipients = (item.recipients || []).map(recipient => (
+        String(recipient.userId) === String(userId)
+          ? { userId: recipient.userId, delivered: true, deliveredAt: recipient.deliveredAt || deliveredAt }
+          : recipient
+      ));
+      item.delivered = true;
+      item.deliveredAt = item.deliveredAt || deliveredAt;
+      await item.save();
+      allDelivered = true;
+      console.log('TEMP_QUEUE_ACK', JSON.stringify({ queueId: String(item._id), scope, messageId: String(item.messageId), userId: String(userId || ''), allDelivered }));
+    }
+    if (allDelivered) {
+      console.log('TEMP_QUEUE_DELIVERED', JSON.stringify({ queueId: String(item._id), scope, messageId: String(item.messageId), deliveredAt: item.deliveredAt }));
+      if (USE_TEMP_QUEUE) {
+        await TempMessageQueue.deleteOne({ _id: item._id });
+        console.log('TEMP_QUEUE_DELIVERED_DELETED', JSON.stringify({ queueId: String(item._id), scope, messageId: String(item.messageId) }));
+      }
+    }
+    return item;
+  } catch (err) {
+    console.log('TEMP_QUEUE_ACK', JSON.stringify({ ok: false, error: err?.message || String(err) }));
+    return null;
+  }
+}
+
+async function cleanupExpiredTempQueue() {
+  try {
+    const now = new Date();
+    const expired = await TempMessageQueue.deleteMany({ expiresAt: { $lte: now } });
+    if (expired.deletedCount) {
+      console.log('TEMP_QUEUE_EXPIRED', JSON.stringify({ deletedCount: expired.deletedCount, at: now.toISOString() }));
+    }
+    console.log('TEMP_QUEUE_CLEANUP', JSON.stringify({ deletedCount: expired.deletedCount || 0, at: now.toISOString() }));
+  } catch (err) {
+    console.log('TEMP_QUEUE_CLEANUP', JSON.stringify({ ok: false, error: err?.message || String(err) }));
+  }
+}
+
+const tempQueueCleanupTimer = setInterval(cleanupExpiredTempQueue, 60 * 60 * 1000);
+if (typeof tempQueueCleanupTimer.unref === 'function') tempQueueCleanupTimer.unref();
 
 function claimRingingAck(callId) {
   const key = String(callId || '');
@@ -110,10 +264,10 @@ app.post('/api/calls/decline', async (req, res) => {
 
 // Connect to MongoDB
 mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log('✅ Connected to MongoDB!'))
-  .catch(err => console.log('❌ MongoDB error:', err));
+  .then(() => console.log('âœ… Connected to MongoDB!'))
+  .catch(err => console.log('âŒ MongoDB error:', err));
 
-// SPA fallback — any unknown route serves index.html so the client-side router takes over
+// SPA fallback â€” any unknown route serves index.html so the client-side router takes over
 app.get('/{*path}', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
@@ -171,7 +325,7 @@ io.on('connection', (socket) => {
       }
     }
   }
-  console.log('✅ User connected:', socket.id);
+  console.log('âœ… User connected:', socket.id);
 
   socket.on('user-online', async (userId) => {
     if (!userId || userId === 'null' || userId === 'undefined') return;
@@ -296,7 +450,7 @@ socket.on('private-message', async (data) => {
       return; // silently drop message
     }
 
-    const message = new Message({
+    const messagePayload = {
       sender: senderId,
       receiver: receiverId,
       content,
@@ -304,12 +458,21 @@ socket.on('private-message', async (data) => {
       forwarded: !!forwarded || String(content || '').includes('[forwarded]'),
       forwardedCount: forwarded ? 1 : 0,
       delivered: false
-    });
-    await message.save();
+    };
+    const message = STOP_PERMANENT_MESSAGE_WRITES
+      ? createRelayMessage({ senderId, receiverId, content, replyTo, forwarded })
+      : new Message(messagePayload);
+    if (!STOP_PERMANENT_MESSAGE_WRITES) {
+      await message.save();
+    } else {
+      console.log('LOCAL_ONLY_MESSAGE_RELAY', JSON.stringify({ scope: 'private', messageId: String(message._id), senderId: String(senderId), receiverId: String(receiverId) }));
+    }
+    const outboundClientMessageId = tempQueueClientMessageId(data, message);
+    await createTempQueueItem({ scope: 'private', data: { ...data, clientMessageId: outboundClientMessageId }, message, senderId, receiverId, recipients: [receiverId] });
     rememberPrivateReceiptRoute(message._id, senderId, receiverId);
 
     // Single tick: server saved the message
-    io.to(socket.id).emit('message-sent', { messageId: message._id });
+    io.to(socket.id).emit('message-sent', { messageId: message._id, temporaryId: outboundClientMessageId, clientMessageId: outboundClientMessageId });
 
   const receiverSocket = onlineUsers[receiverId];
     if (receiverSocket) {
@@ -321,6 +484,8 @@ socket.on('private-message', async (data) => {
         forwarded: !!message.forwarded,
         replyTo: replyTo || null,
         messageId: message._id,
+        temporaryId: outboundClientMessageId,
+        clientMessageId: outboundClientMessageId,
         createdAt: message.createdAt
       });
       io.to(receiverSocket).emit('notification', {
@@ -329,9 +494,11 @@ socket.on('private-message', async (data) => {
         content: content,
         senderId: senderId,
         messageId: message._id,
+        temporaryId: outboundClientMessageId,
+        clientMessageId: outboundClientMessageId,
         createdAt: message.createdAt
       });
-      // Receiver is online → mark delivered in DB immediately before notifying sender
+      // Receiver is online â†’ mark delivered in DB immediately before notifying sender
       // The receiver device confirms delivery with message-delivered. Presence alone is
       // not proof because an onlineUsers entry can briefly outlive a lost network.
     }
@@ -340,16 +507,16 @@ socket.on('private-message', async (data) => {
     try {
       const receiver = await User.findById(receiverId);
       if (receiver && receiver.fcmToken && receiver.messageNotifications !== false) {
-        const preview = content.startsWith('📷[image]') ? '📷 Photo'
-          : content.startsWith('🎤[audio]') || content.includes('[audio]') ? '🎤 Voice message'
+        const preview = content.startsWith('ðŸ“·[image]') ? 'ðŸ“· Photo'
+          : content.startsWith('ðŸŽ¤[audio]') || content.includes('[audio]') ? 'ðŸŽ¤ Voice message'
           : content;
         // Data-only so native onMessageReceived fires in all app states.
         // Native IncomingCallFirebaseMessagingService shows the notification,
         // queues the message, and queues the delivery receipt.
         const rawContent = String(content || '');
-        let fcmPreview = rawContent.includes('[video]') ? 'Video'
-          : rawContent.includes('[image]') ? 'Photo'
-          : rawContent.includes('[audio]') ? 'Voice message'
+        let fcmPreview = rawContent.includes('[video]') ? '🎬 Video'
+          : rawContent.includes('[image]') ? '📷 Photo'
+          : rawContent.includes('[audio]') ? '🎤 Voice message'
           : rawContent.replace(/\s+/g, ' ').trim();
         let contentTruncated = false;
         if (fcmPreview.length > 160) {
@@ -362,12 +529,14 @@ socket.on('private-message', async (data) => {
           senderName: String(senderName || ''),
           receiverId: receiverId.toString(),
           messageId: message._id.toString(),
+          clientMessageId: outboundClientMessageId,
+          temporaryId: outboundClientMessageId,
           chatId: senderId.toString(),
-          content: fcmPreview,
-          contentPreview: fcmPreview,
-          contentIsPreview: 'true',
+            content: rawContent,
+            contentPreview: fcmPreview,
+            contentIsPreview: 'true',
           createdAt: message.createdAt.toISOString(),
-          notif_title: `💬 ${senderName}`,
+          notif_title: `ðŸ’¬ ${senderName}`,
           notif_body: fcmPreview,
         };
         console.log('backend_private_message_fcm_content_truncated', JSON.stringify({
@@ -375,6 +544,12 @@ socket.on('private-message', async (data) => {
           originalLength: rawContent.length,
           previewLength: fcmPreview.length,
           truncated: contentTruncated
+        }));
+        console.log('NOTIFICATION_MEDIA_PREVIEW_FORMATTED', JSON.stringify({
+          scope: 'private',
+          messageId: message._id.toString(),
+          preview: fcmPreview,
+          preservedFullContent: rawContent !== fcmPreview,
         }));
         console.log('backend_private_message_fcm_payload_size', JSON.stringify({
           messageId: message._id.toString(),
@@ -412,6 +587,7 @@ socket.on('private-message', async (data) => {
       const route = privateReceiptRoutes.get(String(messageId));
       if (route && receiverId && route.receiverId === String(receiverId) && route.senderId === String(senderId)) {
         const deliveredAt = new Date();
+        await ackTempQueueDelivery({ scope: 'private', messageId, userId: receiverId });
         const serverRelayedAt = Date.now();
         io.to(route.senderId).emit('message-delivered', { messageId, deliveredAt, serverRelayedAt });
         console.log('PRIVATE_DELIVERED_SERVER_RELAY', JSON.stringify({
@@ -422,23 +598,31 @@ socket.on('private-message', async (data) => {
           serverRelayedAt,
           path: 'memory_route',
         }));
-        setImmediate(async () => {
-          try {
-            await Message.updateOne(
-              { _id: messageId, receiver: receiverId, delivered: { $ne: true } },
-              { $set: { delivered: true, deliveredAt } }
-            );
-          } catch (error) {
-            console.log('server_message_delivered_error', error);
-          }
-        });
+        if (!STOP_PERMANENT_MESSAGE_WRITES) {
+          setImmediate(async () => {
+            try {
+              await Message.updateOne(
+                { _id: messageId, receiver: receiverId, delivered: { $ne: true } },
+                { $set: { delivered: true, deliveredAt } }
+              );
+            } catch (error) {
+              console.log('server_message_delivered_error', error);
+            }
+          });
+        }
         return;
       }
-      const existing = await Message.findById(messageId).select('sender receiver delivered deliveredAt');
+      let existing = await Message.findById(messageId).select('sender receiver delivered deliveredAt');
+      if (!existing && USE_TEMP_QUEUE) {
+        const queued = await TempMessageQueue.findOne({ scope: 'private', messageId }).select('sender receiver deliveredAt');
+        if (!queued || !receiverId || String(queued.receiver) !== String(receiverId)) return;
+        existing = { sender: queued.sender, receiver: queued.receiver, delivered: false, deliveredAt: queued.deliveredAt };
+      }
       if (!existing || !receiverId || String(existing.receiver) !== String(receiverId)) return;
       if (String(existing.sender) !== String(senderId)) return;
       const targetSenderId = String(existing.sender);
       const deliveredAt = existing.deliveredAt || new Date();
+      await ackTempQueueDelivery({ scope: 'private', messageId, userId: receiverId });
       const senderSocket = onlineUsers[targetSenderId];
       if (senderSocket) {
         const serverRelayedAt = Date.now();
@@ -462,15 +646,15 @@ socket.on('private-message', async (data) => {
         }));
       }
       if (existing?.deliveredAt) {
-        // deliveredAt already set — preserve original timestamp, do not overwrite
+        // deliveredAt already set â€” preserve original timestamp, do not overwrite
         console.log('message_delivered_db_after', JSON.stringify({
           messageId: String(messageId),
           delivered: existing.delivered,
           deliveredAt: existing.deliveredAt,
           skipped: 'already_set',
         }));
-      } else {
-        // First delivery — write to DB
+      } else if (!STOP_PERMANENT_MESSAGE_WRITES) {
+        // First delivery ? write to DB while permanent history remains enabled
         console.log('message_delivered_db_before', JSON.stringify({ messageId: String(messageId) }));
         const updatedDelivered = await Message.findByIdAndUpdate(
           messageId,
@@ -482,6 +666,8 @@ socket.on('private-message', async (data) => {
           delivered: updatedDelivered?.delivered,
           deliveredAt: updatedDelivered?.deliveredAt || null,
         }));
+      } else {
+        console.log('message_delivered_db_skipped_local_only', JSON.stringify({ messageId: String(messageId) }));
       }
     } catch (err) {
       console.log('server_message_delivered_error', err);
@@ -616,14 +802,26 @@ socket.on('private-message', async (data) => {
       return;
     }
     const activeOtherCount = group.members.filter(m => m.userId.toString() !== senderId.toString()).length;
-    const message = new Message({ sender: senderId, group: groupId, content, replyTo: replyTo || null, forwarded: !!forwarded || String(content || '').includes('[forwarded]'), forwardedCount: forwarded ? 1 : 0 });
-    await message.save();
+    const groupRecipientIds = group.members.map(m => m.userId.toString()).filter(id => id !== senderId.toString());
+    const groupMessagePayload = { sender: senderId, group: groupId, content, replyTo: replyTo || null, forwarded: !!forwarded || String(content || '').includes('[forwarded]'), forwardedCount: forwarded ? 1 : 0 };
+    const message = STOP_PERMANENT_MESSAGE_WRITES
+      ? createRelayMessage({ senderId, groupId, content, replyTo, forwarded })
+      : new Message(groupMessagePayload);
+    if (!STOP_PERMANENT_MESSAGE_WRITES) {
+      await message.save();
+    } else {
+      console.log('LOCAL_ONLY_MESSAGE_RELAY', JSON.stringify({ scope: 'group', messageId: String(message._id), senderId: String(senderId), groupId: String(groupId) }));
+    }
+    const outboundClientMessageId = tempQueueClientMessageId(data, message);
+    await createTempQueueItem({ scope: 'group', data: { ...data, clientMessageId: outboundClientMessageId }, message, senderId, groupId, recipients: groupRecipientIds });
     // Echo real _id + activeOtherCount back to sender for tick tracking
     socket.emit('group-message-sent', {
       messageId: message._id,
       groupId,
       createdAt: message.createdAt,
       activeOtherCount,
+      temporaryId: outboundClientMessageId,
+      clientMessageId: outboundClientMessageId,
     });
     socket.to(groupId).emit('group-message', {
       senderId,
@@ -632,6 +830,8 @@ socket.on('private-message', async (data) => {
       content,
       forwarded: !!message.forwarded,
       messageId: message._id,
+      temporaryId: outboundClientMessageId,
+      clientMessageId: outboundClientMessageId,
       replyTo: replyTo || null,
       createdAt: message.createdAt,
     });
@@ -646,7 +846,10 @@ socket.on('private-message', async (data) => {
     try {
       const group = await Group.findById(groupId).populate('members.userId', 'fcmToken');
       if (group) {
-        const preview = content.startsWith('📷[image]') ? '📷 Photo' : content;
+        const preview = content.includes('[video]') ? '🎬 Video'
+          : content.includes('[image]') ? '📷 Photo'
+          : content.includes('[audio]') ? '🎤 Voice message'
+          : content;
         const notifPromises = group.members
           .filter(m => m.userId && m.userId.fcmToken && m.userId._id.toString() !== senderId.toString())
           .map(m => sendNotification(
@@ -660,14 +863,22 @@ socket.on('private-message', async (data) => {
               senderName,
               senderId: senderId.toString(),
               messageId: message._id.toString(),
-              content: preview,
-              contentPreview: preview,
-              contentIsPreview: 'true',
+              clientMessageId: outboundClientMessageId,
+              temporaryId: outboundClientMessageId,
+                content: content,
+                contentPreview: preview,
+                contentIsPreview: 'true',
               createdAt: message.createdAt.toISOString(),
               notif_title: `${senderName} in ${groupName}`,
               notif_body: preview,
             }
           ));
+          console.log('NOTIFICATION_MEDIA_PREVIEW_FORMATTED', JSON.stringify({
+            scope: 'group',
+            messageId: message._id.toString(),
+            preview,
+            preservedFullContent: content !== preview,
+          }));
         await Promise.allSettled(notifPromises);
       }
     } catch (err) {
@@ -849,7 +1060,12 @@ socket.on('private-message', async (data) => {
       if (!group) { console.log('SERVER_GROUP_DELIVERED_NO_GROUP', JSON.stringify({ groupId })); return; }
       const isMember = group.members.some(m => m.userId.toString() === userId.toString());
       if (!isMember) { console.log('SERVER_GROUP_DELIVERED_NOT_MEMBER', JSON.stringify({ groupId, userId })); return; }
-      const msg = await Message.findById(messageId).select('sender group deliveredTo');
+      let msg = await Message.findById(messageId).select('sender group deliveredTo');
+      if (!msg && USE_TEMP_QUEUE) {
+        const queued = await TempMessageQueue.findOne({ scope: 'group', messageId, group: groupId }).select('sender group recipients');
+        if (!queued) { console.log('SERVER_GROUP_DELIVERED_NO_MSG', JSON.stringify({ messageId, tempQueue: false })); return; }
+        msg = { sender: queued.sender, group: queued.group, deliveredTo: (queued.recipients || []).filter(r => r.delivered).map(r => ({ userId: r.userId })) };
+      }
       if (!msg) { console.log('SERVER_GROUP_DELIVERED_NO_MSG', JSON.stringify({ messageId })); return; }
       if (String(msg.group) !== String(groupId) || String(msg.sender) === String(userId)) return;
       const senderId = msg.sender.toString();
@@ -857,6 +1073,7 @@ socket.on('private-message', async (data) => {
       console.log('SERVER_GROUP_DELIVERED_STATE', JSON.stringify({ messageId, groupId, userId, senderId, alreadyDelivered, deliveredToCount: (msg.deliveredTo || []).length }));
       if (!alreadyDelivered) {
         const deliveredAt = new Date();
+        await ackTempQueueDelivery({ scope: 'group', messageId, groupId, userId });
         const senderSocket = onlineUsers[senderId];
         console.log('SERVER_GROUP_DELIVERED_SENDER_LOOKUP', JSON.stringify({ senderId, senderSocketId: senderSocket || null, senderOnline: !!senderSocket, onlineUserCount: Object.keys(onlineUsers).length }));
         if (senderSocket) {
@@ -870,10 +1087,14 @@ socket.on('private-message', async (data) => {
         } else {
           console.log('SERVER_GROUP_DELIVERED_SENDER_OFFLINE', JSON.stringify({ senderId, messageId }));
         }
-        await Message.findByIdAndUpdate(messageId, {
-          $push: { deliveredTo: { userId: String(userId), deliveredAt } }
-        });
-        console.log('SERVER_GROUP_DELIVERED_SAVED', JSON.stringify({ messageId, userId, senderId }));
+        if (!STOP_PERMANENT_MESSAGE_WRITES) {
+          await Message.findByIdAndUpdate(messageId, {
+            $push: { deliveredTo: { userId: String(userId), deliveredAt } }
+          });
+          console.log('SERVER_GROUP_DELIVERED_SAVED', JSON.stringify({ messageId, userId, senderId }));
+        } else {
+          console.log('SERVER_GROUP_DELIVERED_SAVE_SKIPPED_LOCAL_ONLY', JSON.stringify({ messageId, userId, senderId }));
+        }
       } else {
         console.log('SERVER_GROUP_DELIVERED_ALREADY_SAVED', JSON.stringify({ messageId, userId }));
       }
@@ -978,6 +1199,35 @@ socket.on('private-message', async (data) => {
     if (!messageId || !senderId) return;
     try {
       const playerId = getSocketUserId();
+      const route = privateReceiptRoutes.get(String(messageId));
+      if (route && playerId && route.receiverId === String(playerId) && route.senderId === String(senderId)) {
+        const playedAt = new Date();
+        const serverRelayedAt = Date.now();
+        io.to(route.senderId).emit('message-played', { messageId: String(messageId), playedAt, serverRelayedAt });
+        console.log('VOICE_PLAYED_RECEIPT_RECEIVED', JSON.stringify({
+          messageId: String(messageId),
+          senderId: route.senderId,
+          playerId: route.receiverId,
+          path: 'memory_route',
+        }));
+        console.log('message_played_relayed', JSON.stringify({
+          messageId: String(messageId),
+          senderSocket: onlineUsers[route.senderId] || null,
+          serverRelayedAt,
+          path: 'memory_route',
+        }));
+        setImmediate(async () => {
+          try {
+            await Message.updateOne(
+              { _id: messageId, receiver: playerId, 'playedBy.userId': { $ne: String(playerId) } },
+              { $push: { playedBy: { userId: String(playerId), playedAt } } }
+            );
+          } catch (error) {
+            console.log('message_played_error', String(error));
+          }
+        });
+        return;
+      }
       const msg = await Message.findById(messageId).select('sender receiver playedBy');
       if (!msg) return;
       if (!playerId || String(msg.receiver) !== String(playerId)) return;
@@ -988,10 +1238,18 @@ socket.on('private-message', async (data) => {
         const targetSenderId = String(msg.sender);
         const senderSocket = onlineUsers[targetSenderId];
         if (senderSocket) {
-          io.to(targetSenderId).emit('message-played', { messageId: String(messageId), playedAt });
+          const serverRelayedAt = Date.now();
+          io.to(targetSenderId).emit('message-played', { messageId: String(messageId), playedAt, serverRelayedAt });
+          console.log('VOICE_PLAYED_RECEIPT_RECEIVED', JSON.stringify({
+            messageId: String(messageId),
+            senderId: targetSenderId,
+            playerId: String(playerId),
+            path: 'database_fallback',
+          }));
           console.log('message_played_relayed', JSON.stringify({
             messageId: String(messageId),
             senderSocket,
+            serverRelayedAt,
             persistencePending: true,
           }));
         } else {
@@ -1295,7 +1553,7 @@ socket.on('private-message', async (data) => {
   socket.on('receiver-ringing', (data = {}) => {
     relayRingingAck(data, 'socket_receiver_ringing');
   });
-  // Receiver accepted — relay to caller so they join Stream
+  // Receiver accepted â€” relay to caller so they join Stream
   async function relayCallCancel(eventName, data) {
     console.log('server_call_cancel_received', {
       eventName,
@@ -1395,8 +1653,37 @@ socket.on('private-message', async (data) => {
   socket.on('call-answer', async (data) => {
     const { callerId, answer } = data;
     const callerSocket = onlineUsers[callerId];
+    const answeredCallId = data?.callId ? String(data.callId) : '';
     if (callerSocket) {
-      io.to(callerSocket).emit('call-answered', { answer });
+      io.to(callerSocket).emit('call-answered', {
+        answer,
+        callId: answeredCallId,
+        fromUserId: socket.data.userId || null,
+        callType: data?.callType ? String(data.callType) : 'voice',
+      });
+    }
+    try {
+      const receiverId = String(socket.data.userId || '');
+      const pending = answeredCallId && global.pendingIceCandidatesByCallId
+        ? (global.pendingIceCandidatesByCallId[answeredCallId] || [])
+        : [];
+      const replayToReceiver = pending.filter((item) => String(item?.targetUserId || '') === receiverId);
+      if (replayToReceiver.length > 0) {
+        for (const item of replayToReceiver) {
+          socket.emit('call-ice-candidate', item.payload);
+        }
+        global.pendingIceCandidatesByCallId[answeredCallId] = pending.filter((item) => String(item?.targetUserId || '') !== receiverId);
+        console.log('SERVER_ICE_CANDIDATE_BUFFER_FLUSHED_TO_ANSWERER', {
+          callId: answeredCallId,
+          receiverId,
+          replayedCount: replayToReceiver.length,
+        });
+      }
+    } catch (e) {
+      console.log('SERVER_ICE_CANDIDATE_BUFFER_FLUSH_FAILED', {
+        callId: answeredCallId,
+        error: String(e?.message || e),
+      });
     }
     try {
       const key = Object.keys(global.pendingCallLogs || {}).find(k => k.includes(callerId));
@@ -1453,7 +1740,7 @@ socket.on('private-message', async (data) => {
           const caller = await User.findById(log.callerId);
           const callerName = caller ? caller.name : 'Someone';
 
-          // Socket event for online receivers — instant in-app notification
+          // Socket event for online receivers â€” instant in-app notification
           if (targetSocket) {
             io.to(targetSocket).emit('missed-call', {
               callerId: String(log.callerId),
@@ -1468,7 +1755,7 @@ socket.on('private-message', async (data) => {
             await getMessaging().send({
               token: receiver.fcmToken,
               notification: {
-                title: '📵 Missed call',
+                title: 'ðŸ“µ Missed call',
                 body: `You missed a ${log.callType} call from ${callerName}`,
               },
               data: {
@@ -1488,31 +1775,82 @@ socket.on('private-message', async (data) => {
     }
   });
 
+  socket.on('call-media-connected', (data = {}) => {
+    const targetUserId = String(data?.targetUserId || '');
+    const payload = {
+      callId: data?.callId ? String(data.callId) : '',
+      fromUserId: data?.fromUserId ? String(data.fromUserId) : String(socket.data.userId || ''),
+      targetUserId,
+      callType: data?.callType ? String(data.callType) : 'voice',
+      source: data?.source ? String(data.source) : 'peer_media_connected',
+    };
+    console.log('SERVER_CALL_MEDIA_CONNECTED_RECEIVED', payload);
+    const targetSocket = onlineUsers[targetUserId];
+    if (targetSocket) {
+      io.to(targetSocket).emit('call-media-connected', payload);
+      console.log('SERVER_CALL_MEDIA_CONNECTED_RELAYED', { ...payload, targetSocket });
+    } else {
+      console.log('SERVER_CALL_MEDIA_CONNECTED_TARGET_NOT_FOUND', payload);
+    }
+  });
   // ICE candidate exchange
   socket.on('call-ice-candidate', (data) => {
     const { candidate, callId, callType, fromUserId } = data;
     const targetUserId = String(data?.targetUserId || '');
-    console.log(
-      'Forwarding ICE candidate to:',
-      targetUserId,
-      'type:',
-      candidate?.type || String(candidate?.candidate || '').match(/\btyp\s+([a-z0-9]+)/i)?.[1] || null
-    );
-    const targetSocket = onlineUsers[targetUserId];
-    if (targetSocket) {
-      io.to(targetSocket).emit('call-ice-candidate', {
-        candidate,
+    const candidateType = candidate?.type || String(candidate?.candidate || '').match(/\btyp\s+([a-z0-9]+)/i)?.[1] || null;
+    const payload = {
+      candidate,
+      callId,
+      callType,
+      fromUserId: fromUserId || socket.data.userId || null,
+    };
+    if (callId) {
+      global.pendingIceCandidatesByCallId = global.pendingIceCandidatesByCallId || {};
+      global.pendingIceCandidatesByCallId[callId] = global.pendingIceCandidatesByCallId[callId] || [];
+      global.pendingIceCandidatesByCallId[callId].push({ targetUserId, payload, createdAt: Date.now() });
+      if (global.pendingIceCandidatesByCallId[callId].length > 80) {
+        global.pendingIceCandidatesByCallId[callId] = global.pendingIceCandidatesByCallId[callId].slice(-80);
+      }
+      console.log('SERVER_ICE_CANDIDATE_BUFFERED', {
         callId,
         callType,
-        fromUserId: fromUserId || socket.data.userId || null,
+        targetUserId,
+        candidateType,
+        bufferedCount: global.pendingIceCandidatesByCallId[callId].length,
       });
-      console.log('ICE candidate forwarded successfully');
+    }
+    console.log('SERVER_ICE_CANDIDATE_RECEIVED', {
+      callId,
+      callType,
+      fromUserId: payload.fromUserId,
+      targetUserId,
+      candidateType,
+      hasCandidate: !!candidate,
+      sourceSocketId: socket.id,
+    });
+    const targetSocket = onlineUsers[targetUserId];
+    if (targetSocket) {
+      io.to(targetSocket).emit('call-ice-candidate', payload);
+      console.log('SERVER_ICE_CANDIDATE_FORWARDED', {
+        callId,
+        callType,
+        fromUserId: payload.fromUserId,
+        targetUserId,
+        targetSocket,
+        candidateType,
+      });
     } else {
-      console.log('Target user not found:', targetUserId);
+      console.log('SERVER_ICE_CANDIDATE_TARGET_NOT_FOUND', {
+        callId,
+        callType,
+        fromUserId: payload.fromUserId,
+        targetUserId,
+        candidateType,
+      });
     }
   });
 
-  // Camera on/off — relay to the other peer so they can show a placeholder
+  // Camera on/off â€” relay to the other peer so they can show a placeholder
   socket.on('call-ice-restart-offer', (data = {}) => {
     const targetUserId = String(data?.targetUserId || '');
     const targetSocket = onlineUsers[targetUserId];
@@ -1570,7 +1908,11 @@ setInterval(() => {
 }, 10 * 60 * 1000);
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+server.listen(PORT, () => console.log(`ðŸš€ Server running on port ${PORT}`));
+
+
+
+
 
 
 
