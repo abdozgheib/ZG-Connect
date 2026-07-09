@@ -328,6 +328,151 @@ io.on('connection', (socket) => {
   }
   console.log('âœ… User connected:', socket.id);
 
+  async function flushQueuedTempMessages(userId) {
+    const queuedMessages = await TempMessageQueue.find({
+      $or: [
+        {
+          scope: 'private',
+          receiver: userId,
+          delivered: { $ne: true },
+        },
+        {
+          scope: 'group',
+          recipients: {
+            $elemMatch: {
+              userId,
+              delivered: { $ne: true },
+            },
+          },
+        },
+      ],
+    }).sort({ createdAt: 1 }).limit(500);
+
+    if (queuedMessages.length === 0) return;
+
+    const senderIds = [...new Set(queuedMessages.map(item => String(item.sender || '')).filter(Boolean))];
+    const groupIds = [...new Set(queuedMessages.map(item => String(item.group || '')).filter(Boolean))];
+    const [senders, groups] = await Promise.all([
+      User.find({ _id: { $in: senderIds } }).select('name'),
+      Group.find({ _id: { $in: groupIds }, isDeleted: { $ne: true } }).select('name members'),
+    ]);
+    const senderNameById = new Map(senders.map(user => [String(user._id), user.name]));
+    const groupById = new Map(groups.map(group => [String(group._id), group]));
+
+    for (const item of queuedMessages) {
+      try {
+        if (!socket.connected) {
+          console.log('TEMP_QUEUE_REPLAY_SKIPPED', JSON.stringify({
+            queueId: String(item._id),
+            messageId: String(item.messageId || ''),
+            userId: String(userId),
+            reason: 'socket_disconnected',
+          }));
+          return;
+        }
+
+        const scope = String(item.scope || '');
+        const messageId = String(item.messageId || '');
+        const clientMessageId = String(item.clientMessageId || messageId || item._id);
+        const senderId = String(item.sender || '');
+        const senderName = senderNameById.get(senderId) || '';
+        const content = String(item.content || '');
+        const createdAt = item.createdAt || new Date();
+
+        if (!messageId || !senderId || !content) {
+          console.log('TEMP_QUEUE_REPLAY_SKIPPED', JSON.stringify({
+            queueId: String(item._id),
+            messageId,
+            userId: String(userId),
+            reason: 'invalid_item',
+          }));
+          continue;
+        }
+
+        if (scope === 'private') {
+          if (String(item.receiver || '') !== String(userId)) {
+            console.log('TEMP_QUEUE_REPLAY_SKIPPED', JSON.stringify({
+              queueId: String(item._id),
+              messageId,
+              userId: String(userId),
+              reason: 'private_receiver_mismatch',
+            }));
+            continue;
+          }
+
+          socket.emit('private-message', {
+            senderId,
+            senderName,
+            receiverId: String(userId),
+            content,
+            forwarded: String(content || '').includes('[forwarded]'),
+            replyTo: null,
+            messageId,
+            temporaryId: clientMessageId,
+            clientMessageId,
+            createdAt,
+          });
+          await ackTempQueueDelivery({ scope: 'private', messageId, userId });
+          console.log('TEMP_QUEUE_REPLAYED', JSON.stringify({
+            queueId: String(item._id),
+            messageId,
+            scope,
+            userId: String(userId),
+          }));
+        } else if (scope === 'group') {
+          const groupId = String(item.group || '');
+          const group = groupById.get(groupId);
+          const isCurrentMember = group?.members?.some(member => String(member.userId) === String(userId));
+          if (!groupId || !isCurrentMember) {
+            console.log('TEMP_QUEUE_REPLAY_SKIPPED', JSON.stringify({
+              queueId: String(item._id),
+              messageId,
+              groupId,
+              userId: String(userId),
+              reason: groupId ? 'not_group_member' : 'missing_group',
+            }));
+            continue;
+          }
+
+          socket.emit('group-message', {
+            senderId,
+            senderName,
+            groupId,
+            content,
+            forwarded: String(content || '').includes('[forwarded]'),
+            messageId,
+            temporaryId: clientMessageId,
+            clientMessageId,
+            replyTo: null,
+            createdAt,
+          });
+          await ackTempQueueDelivery({ scope: 'group', messageId, groupId, userId });
+          console.log('TEMP_QUEUE_REPLAYED', JSON.stringify({
+            queueId: String(item._id),
+            messageId,
+            scope,
+            groupId,
+            userId: String(userId),
+          }));
+        } else {
+          console.log('TEMP_QUEUE_REPLAY_SKIPPED', JSON.stringify({
+            queueId: String(item._id),
+            messageId,
+            userId: String(userId),
+            reason: 'unknown_scope',
+          }));
+        }
+      } catch (err) {
+        console.log('TEMP_QUEUE_REPLAY_ERROR', JSON.stringify({
+          queueId: String(item?._id || ''),
+          messageId: String(item?.messageId || ''),
+          userId: String(userId),
+          error: err?.message || String(err),
+        }));
+      }
+    }
+  }
+
   socket.on('user-online', async (userId) => {
     if (!userId || userId === 'null' || userId === 'undefined') return;
     socket.data.userId = String(userId);
@@ -341,6 +486,11 @@ io.on('connection', (socket) => {
       await flushPendingDeliveryReceipts(String(userId));
     } catch (err) {
       console.log('pending_delivery_receipt_flush_error', String(err));
+    }
+    try {
+      await flushQueuedTempMessages(String(userId));
+    } catch (err) {
+      console.log('temp_queue_replay_flush_error', String(err));
     }
   });
 
